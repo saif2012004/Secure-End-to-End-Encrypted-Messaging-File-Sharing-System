@@ -15,9 +15,11 @@ import { logger } from '../utils/logger.js';
  * @returns {object} Socket.io server instance
  */
 export const initializeSocket = (server) => {
+  const rawOrigins = process.env.SOCKET_CORS_ORIGIN || 'http://localhost:3000';
+  const socketOrigins = rawOrigins.split(',').map((o) => o.trim()).filter(Boolean);
   const io = new Server(server, {
     cors: {
-      origin: process.env.SOCKET_CORS_ORIGIN || 'http://localhost:3000',
+      origin: socketOrigins.length === 1 ? socketOrigins[0] : socketOrigins,
       credentials: true,
       methods: ['GET', 'POST'],
     },
@@ -270,7 +272,7 @@ export const initializeSocket = (server) => {
           const roomName = [socket.userId, recipientId].sort().join('_');
 
           // Relay encrypted message to recipient (NO DECRYPTION)
-          io.to(recipientId).emit('receive_message', {
+          const payload = {
             senderId: socket.userId,
             senderUsername: socket.username,
             ciphertext,      // Encrypted data - server doesn't read this
@@ -279,21 +281,15 @@ export const initializeSocket = (server) => {
             seq,             // Sequence number
             signature,       // Digital signature (if provided)
             messageType: messageType || 'text',
-            timestamp: new Date().toISOString(),
-          });
+            timestamp: Date.now(),
+            messageId: data?.messageId,
+            nonce: data?.nonce,
+            payload: data?.payload,
+            envelope: data?.envelope,
+          };
 
-          // Also broadcast to room if both users are in it
-          socket.to(roomName).emit('receive_message', {
-            senderId: socket.userId,
-            senderUsername: socket.username,
-            ciphertext,
-            iv,
-            tag,
-            seq,
-            signature,
-            messageType: messageType || 'text',
-            timestamp: new Date().toISOString(),
-          });
+          // Relay only to recipient (room broadcast caused dupes)
+          io.to(recipientId).emit('receive_message', payload);
 
           // Log message relay (NO message content logged)
           await Log.createLog({

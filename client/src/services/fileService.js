@@ -121,21 +121,22 @@ export async function uploadEncryptedFile({ file, sessionKeyBytes, socket, recip
     const enc = await encryptFileChunk(chunkData, sessionKeyBytes, idx, totalChunks);
     const serialized = serializeEncryptedChunk(enc);
 
+    // Align with server socket handler: send_file_chunk expects chunkNumber/totalChunks/encryptedData/iv/tag/fileName/fileSize/mimeType
     const packet = {
-      type: 'encrypted_chunk',
-      fileId: computedFileId,
-      chunkIndex: idx,
+      recipientId,
+      messageId: computedFileId,
+      chunkNumber: idx,
       totalChunks,
-      filename: encryptedNameB64, // encrypted separately, same for all chunks
-      mimeType: file.type || 'application/octet-stream',
-      ciphertext: serialized.ciphertext,
+      encryptedData: serialized.ciphertext,
       iv: serialized.iv,
       tag: serialized.tag,
+      hash: '', // TODO: optional integrity hash after all chunks
+      fileName: encryptedNameB64, // encrypted filename
       fileSize: file.size,
-      recipientId,
+      mimeType: file.type || 'application/octet-stream',
     };
 
-    socket.emit('encrypted_chunk', packet);
+    socket.emit('send_file_chunk', packet);
 
     await saveFileRecord({
       fileId: computedFileId,
@@ -171,19 +172,19 @@ export async function resumeUpload(params) {
  * Handle incoming encrypted chunk from socket. Decrypt and assemble once complete.
  */
 export async function handleIncomingChunk(chunkPacket, sessionKeyBytes, onComplete) {
-  if (!chunkPacket || chunkPacket.type !== 'encrypted_chunk') {
+  if (!chunkPacket) {
     console.warn('Ignoring non-encrypted chunk payload');
     return;
   }
-  const fileId = chunkPacket.fileId;
+  const fileId = chunkPacket.fileId || chunkPacket.messageId;
   const total = chunkPacket.totalChunks;
-  const idx = chunkPacket.chunkIndex;
+  const idx = chunkPacket.chunkIndex !== undefined ? chunkPacket.chunkIndex : chunkPacket.chunkNumber;
 
   // Load or create record for this file
   const existing = (await getFileRecord(fileId)) || {
     fileId,
     direction: 'download',
-    encryptedName: chunkPacket.filename,
+    encryptedName: chunkPacket.filename || chunkPacket.fileName,
     mimeType: chunkPacket.mimeType || 'application/octet-stream',
     totalChunks: total,
     received: {},
@@ -196,7 +197,7 @@ export async function handleIncomingChunk(chunkPacket, sessionKeyBytes, onComple
   }
 
   receivedMap[idx] = {
-    ciphertext: chunkPacket.ciphertext,
+    ciphertext: chunkPacket.ciphertext || chunkPacket.encryptedData,
     iv: chunkPacket.iv,
     tag: chunkPacket.tag,
   };
@@ -220,9 +221,18 @@ export async function handleIncomingChunk(chunkPacket, sessionKeyBytes, onComple
     if (!serialized) {
       throw new Error(`Missing chunk index ${i} during reassembly`);
     }
-    const des = deserializeEncryptedChunk(serialized);
-    const plainChunk = await decryptFileChunk(des.ciphertext, des.iv, des.tag, sessionKeyBytes);
-    orderedChunks.push(plainChunk);
+    try {
+      const des = deserializeEncryptedChunk({
+        ciphertext: serialized.ciphertext || serialized.encryptedData,
+        iv: serialized.iv,
+        tag: serialized.tag,
+      });
+      const plainChunk = await decryptFileChunk(des.ciphertext, des.iv, des.tag, sessionKeyBytes);
+      orderedChunks.push(plainChunk);
+    } catch (err) {
+      console.error('Failed to decode/decrypt chunk', i, err);
+      throw err;
+    }
   }
 
   const merged = combineChunks(orderedChunks);
@@ -234,6 +244,7 @@ export async function handleIncomingChunk(chunkPacket, sessionKeyBytes, onComple
   anchor.download = filename || 'download.bin';
   anchor.click();
   URL.revokeObjectURL(url);
+  console.log('File decrypted and saved', filename);
 
   await deleteFileRecord(fileId);
   if (onComplete) onComplete({ fileId, filename, size: merged.byteLength });

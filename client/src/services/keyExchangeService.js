@@ -1,5 +1,11 @@
 import { hkdf } from '../utils/hkdf';
-import { arrayBufferToBase64, base64ToArrayBuffer, utf8ToBytes, randomBytes, concatBytes } from '../utils/base64';
+import {
+  arrayBufferToBase64,
+  base64ToArrayBuffer,
+  utf8ToBytes,
+  randomBytes,
+  concatBytes,
+} from '../utils/base64';
 import { useAuthStore } from '../store/authStore';
 
 const DB_NAME = 'key-exchange-db';
@@ -9,6 +15,7 @@ let socketRef = null;
 const sessionCache = new Map();
 const handshakeCache = new Map();
 const identityCache = {};
+const MAX_SKEW_MS = 30_000; // ±30s freshness window for KE messages
 
 function openDb() {
   if (dbPromise) return dbPromise;
@@ -51,7 +58,8 @@ const rememberOutgoingNonce = (nonce) => putValue('nonces_out', { nonce, ts: Dat
 const rememberIncomingNonce = (nonce) => putValue('nonces_in', { nonce, ts: Date.now() });
 const seenIncomingNonce = async (nonce) => !!(await getValue('nonces_in', nonce));
 
-async function persistSession(userId, keyRaw, seq = 0, username) {
+async function persistSession(userId, keyRawBytes, seq = 0, username) {
+  const keyRaw = keyRawBytes instanceof ArrayBuffer ? new Uint8Array(keyRawBytes) : keyRawBytes;
   return putValue('sessions', {
     userId,
     key: arrayBufferToBase64(keyRaw),
@@ -64,14 +72,15 @@ async function persistSession(userId, keyRaw, seq = 0, username) {
 async function loadSession(userId) {
   const record = await getValue('sessions', userId);
   if (!record) return null;
+  const keyBytes = new Uint8Array(base64ToArrayBuffer(record.key));
   const key = await crypto.subtle.importKey(
     'raw',
-    base64ToArrayBuffer(record.key),
+    keyBytes,
     { name: 'AES-GCM' },
     true,
-    ['encrypt', 'decrypt']
+    ['encrypt', 'decrypt'],
   );
-  const session = { key, seq: record.seq || 0, username: record.username };
+  const session = { key, keyBytes, seq: record.seq || 0, username: record.username };
   sessionCache.set(userId, session);
   return session;
 }
@@ -80,19 +89,40 @@ async function ensureIdentityKeys() {
   if (identityCache.self) return identityCache.self;
   const stored = await getValue('identity', 'self');
   if (stored?.pub && stored?.priv) {
-    const publicKey = await crypto.subtle.importKey('spki', base64ToArrayBuffer(stored.pub), { name: 'ECDSA', namedCurve: 'P-256' }, true, ['verify']);
-    const privateKey = await crypto.subtle.importKey('jwk', stored.priv, { name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign']);
+    const publicKey = await crypto.subtle.importKey(
+      'spki',
+      base64ToArrayBuffer(stored.pub),
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['verify'],
+    );
+    const privateKey = await crypto.subtle.importKey(
+      'jwk',
+      stored.priv,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign'],
+    );
     identityCache.self = { publicKey, privateKey, pubB64: stored.pub };
     return identityCache.self;
   }
 
-  const keyPair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const keyPair = await crypto.subtle.generateKey(
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    true,
+    ['sign', 'verify'],
+  );
   const pub = await crypto.subtle.exportKey('spki', keyPair.publicKey);
   const priv = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
   const pubB64 = arrayBufferToBase64(pub);
   await putValue('identity', { id: 'self', pub: pubB64, priv });
   identityCache.self = { publicKey: keyPair.publicKey, privateKey: keyPair.privateKey, pubB64 };
   return identityCache.self;
+}
+
+export async function getIdentityPublicB64() {
+  const identity = await ensureIdentityKeys();
+  return identity.pubB64;
 }
 
 async function signPayload(payload) {
@@ -126,7 +156,7 @@ async function deriveSessionKeys(peerPublicKeyB64, localPrivateKey, initNonce, r
 
   const sessionKey = await crypto.subtle.importKey('raw', encMaterial, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
   const macKey = await crypto.subtle.importKey('raw', macMaterial, { name: 'HMAC', hash: 'SHA-256' }, true, ['sign', 'verify']);
-  return { sessionKey, macKey, rawKey: encMaterial.buffer };
+  return { sessionKey, macKey, rawKey: encMaterial.buffer, rawKeyBytes: encMaterial };
 }
 
 const confirmData = (initNonce, respNonce) => concatBytes(base64ToArrayBuffer(initNonce), base64ToArrayBuffer(respNonce), utf8ToBytes('KEY_CONFIRM'));
@@ -147,14 +177,29 @@ function logComplete(username) {
   console.log(`Key exchange completed with ${name}!`);
 }
 
+function isFreshTimestamp(tsMs) {
+  if (!tsMs) return false;
+  const skew = Math.abs(Date.now() - Number(tsMs));
+  return skew <= MAX_SKEW_MS;
+}
+
 async function cacheSession(userId, sessionKey, username) {
-  const raw = await crypto.subtle.exportKey('raw', sessionKey);
+  const raw = sessionKey instanceof Uint8Array
+    ? sessionKey
+    : new Uint8Array(await crypto.subtle.exportKey('raw', sessionKey));
   await persistSession(userId, raw, 0, username);
-  sessionCache.set(userId, { key: sessionKey, seq: 0, username });
+  const cryptoKey = await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
+  sessionCache.set(userId, { key: cryptoKey, keyBytes: raw, seq: 0, username });
+  console.log('[keyx] session key cached for', username || userId);
 }
 
 async function handleKeInit(payload, meta) {
   if (!payload?.nonce || !payload?.ephPub) return;
+  const ts = payload.ts || Date.now();
+  if (!isFreshTimestamp(ts)) {
+    console.warn('Stale KE_INIT rejected (timestamp skew too large)');
+    return;
+  }
   if (await seenIncomingNonce(payload.nonce)) {
     console.warn('Ignoring replayed KE_INIT');
     return;
@@ -175,7 +220,12 @@ async function handleKeInit(payload, meta) {
   await rememberOutgoingNonce(responderNonce);
   const identity = await ensureIdentityKeys();
 
-  const { sessionKey, macKey } = await deriveSessionKeys(payload.ephPub, responderKeys.privateKey, payload.nonce, responderNonce);
+  const { sessionKey, macKey, rawKeyBytes } = await deriveSessionKeys(
+    payload.ephPub,
+    responderKeys.privateKey,
+    payload.nonce,
+    responderNonce,
+  );
   handshakeCache.set(payload.from || meta.senderId, {
     role: 'responder',
     initiatorNonce: payload.nonce,
@@ -191,6 +241,7 @@ async function handleKeInit(payload, meta) {
     from: meta.selfId,
     to: payload.from,
     nonce: responderNonce,
+    ts: Date.now(),
     ephPub: arrayBufferToBase64(await crypto.subtle.exportKey('raw', responderKeys.publicKey)),
     initiatorNonce: payload.nonce,
     identityKey: identity.pubB64,
@@ -203,6 +254,9 @@ async function handleKeInit(payload, meta) {
     publicKey: JSON.stringify(reply),
     signature: signature || undefined,
   });
+
+  // Cache responder side session immediately so we can decrypt early messages
+  await cacheSession(payload.from || meta.senderId, rawKeyBytes, meta.senderName || payload.fromName);
 }
 
 async function handleKeReply(payload, meta) {
@@ -210,6 +264,11 @@ async function handleKeReply(payload, meta) {
   const existing = handshakeCache.get(userId);
   if (!existing || !existing.initiatorNonce) return;
 
+  const ts = payload.ts || Date.now();
+  if (!isFreshTimestamp(ts)) {
+    console.warn('Stale KE_REPLY rejected (timestamp skew too large)');
+    return;
+  }
   if (await seenIncomingNonce(payload.nonce)) {
     console.warn('Replay KE_REPLY ignored');
     return;
@@ -222,7 +281,12 @@ async function handleKeReply(payload, meta) {
     if (!ok) return;
   }
 
-  const derived = await deriveSessionKeys(payload.ephPub, existing.ephemeral?.privateKey || existing.ephemeralPriv, existing.initiatorNonce, payload.nonce);
+  const derived = await deriveSessionKeys(
+    payload.ephPub,
+    existing.ephemeral?.privateKey || existing.ephemeralPriv,
+    existing.initiatorNonce,
+    payload.nonce,
+  );
   const mac = await buildMac(derived.macKey, existing.initiatorNonce, payload.nonce);
 
   const confirm = {
@@ -232,6 +296,7 @@ async function handleKeReply(payload, meta) {
     mac,
     initiatorNonce: existing.initiatorNonce,
     responderNonce: payload.nonce,
+    ts: Date.now(),
   };
 
   socketRef?.emit('key-exchange:send', {
@@ -254,6 +319,12 @@ async function handleKeyConfirm(payload, meta) {
   const userId = payload.from || meta.senderId;
   const existing = handshakeCache.get(userId);
   if (!existing || !existing.macKey) return;
+
+  const ts = payload.ts || Date.now();
+  if (!isFreshTimestamp(ts)) {
+    console.warn('Stale KEY_CONFIRM rejected (timestamp skew too large)');
+    return;
+  }
 
   const mac = payload.mac || meta.signature;
   if (!mac) return;
@@ -304,6 +375,7 @@ export async function startKeyExchange(userId, username, opts = {}) {
   }
   if (sessionCache.has(userId) || (await loadSession(userId))) return;
 
+  console.log('[keyx] starting key exchange with', username || userId);
   const authUser = useAuthStore.getState().user;
   const ephemeral = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey', 'deriveBits']);
   const nonce = arrayBufferToBase64(randomBytes(16));  await rememberOutgoingNonce(nonce);
@@ -314,6 +386,7 @@ export async function startKeyExchange(userId, username, opts = {}) {
     fromName: authUser?.username,
     to: userId,
     nonce,
+    ts: Date.now(),
     ephPub: arrayBufferToBase64(await crypto.subtle.exportKey('raw', ephemeral.publicKey)),
     identityKey: identity.pubB64,
     mode: opts.insecure ? 'insecure' : 'signed',
@@ -339,9 +412,43 @@ export const startInsecureKeyExchange = (userId, username) => startKeyExchange(u
 
 export async function getSessionKey(userId) {
   const cached = sessionCache.get(userId);
-  if (cached?.key) return cached.key;
+  if (cached?.keyBytes) return cached.keyBytes;
   const session = await loadSession(userId);
-  return session?.key || null;
+  return session?.keyBytes || null;
+}
+
+export async function nextSessionSeq(userId) {
+  const cached = sessionCache.get(userId) || (await loadSession(userId));
+  if (!cached) return 0;
+  const nextSeq = (cached.seq || 0) + 1;
+  cached.seq = nextSeq;
+  sessionCache.set(userId, cached);
+  await persistSession(userId, cached.keyBytes || (await crypto.subtle.exportKey('raw', cached.key)), nextSeq, cached.username);
+  return nextSeq;
+}
+
+/**
+ * Ensure a session key exists; if not, trigger key exchange and wait briefly.
+ * Returns raw key bytes or null if timeout.
+ */
+export async function waitForSessionKey(userId, username, timeoutMs = 5000) {
+  const existing = await getSessionKey(userId);
+  if (existing) return existing;
+
+  // kick off exchange if not already in flight
+  console.log('[keyx] auto-starting key exchange for', userId, username || '');
+  startKeyExchange(userId, username).catch((err) => console.error('Auto key exchange failed', err));
+
+  const start = Date.now();
+  // poll every 200ms
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const key = await getSessionKey(userId);
+    if (key) return key;
+    if (Date.now() - start > timeoutMs) return null;
+    // small delay
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
 }
 
 export const keyExchangeService = {
@@ -350,6 +457,9 @@ export const keyExchangeService = {
   startKeyExchange,
   startInsecureKeyExchange,
   getSessionKey,
+  nextSessionSeq,
+  getIdentityPublicB64,
+  waitForSessionKey,
 };
 
 export default keyExchangeService;

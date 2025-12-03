@@ -1,6 +1,5 @@
 import { useState, useRef } from 'react';
 import { useChatStore } from '../store/chatStore';
-import { encryptMessage } from '../utils/crypto';
 import '../styles/MessageInput.css';
 
 function MessageInput({ recipientId }) {
@@ -34,21 +33,11 @@ function MessageInput({ recipientId }) {
     }
 
     try {
-      // NOTE: Placeholder encryption function
-      // Members 1 & 2 will implement actual encryption
-      const encrypted = await encryptMessage(message, recipientId);
-
-      // Send encrypted message
       await sendMessage({
         recipientId,
-        ciphertext: encrypted.ciphertext,
-        iv: encrypted.iv,
-        tag: encrypted.tag,
-        seq: Date.now(), // Placeholder sequence number
-        plaintext: message, // For display only (remove in production!)
+        plaintext: message,
         messageType: 'text',
       });
-
       setMessage('');
     } catch (error) {
       console.error('Failed to send message:', error);
@@ -83,11 +72,11 @@ function MessageInput({ recipientId }) {
           disabled={!message.trim() || !recipientId}
           title="Send encrypted message"
         >
-          <span className="send-icon">📤</span>
+          <span className="send-icon">Send</span>
         </button>
       </form>
       <div className="encryption-notice">
-        🔒 Messages are end-to-end encrypted
+        Messages are end-to-end encrypted
       </div>
     </div>
   );

@@ -74,11 +74,17 @@ async function saveReplayRecord(record) {
 /**
  * Create an outbound envelope with encryption and packing.
  */
-export async function createEncryptedEnvelope(plainText, sessionKeyUint8, targetUserId, myIdentityPub) {
+export async function createEncryptedEnvelope(
+  plainText,
+  sessionKeyUint8,
+  targetUserId,
+  myIdentityPub,
+  seqOverride,
+) {
   try {
     const nonceBytes = getRandomNonce(); // 16-byte nonce for replay protection (not the AES IV)
     const nonce_b64 = bytesToBase64(nonceBytes);
-    const seq_num = getSeqNumber();
+    const seq_num = typeof seqOverride === 'number' ? seqOverride : getSeqNumber();
 
     const encrypted = await encryptMessage(plainText, sessionKeyUint8);
     const packed = packPayload(encrypted.ciphertext, encrypted.iv, encrypted.tag);

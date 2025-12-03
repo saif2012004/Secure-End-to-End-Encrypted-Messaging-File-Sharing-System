@@ -10,7 +10,42 @@ import { isValidObjectId } from '../utils/validation.js';
  */
 export const sendMessage = async (req, res) => {
   try {
-    const { recipientId, ciphertext, iv, tag, seq, signature, messageType } = req.body;
+    let {
+      recipientId,
+      ciphertext,
+      iv,
+      tag,
+      seq,
+      signature,
+      messageType,
+      envelope,
+      payload,
+      nonce,
+      timestamp,
+    } = req.body;
+
+    // If an envelope is provided (new client), unpack to legacy fields so backend stays happy.
+    if ((!ciphertext || !iv || !tag) && (envelope || payload)) {
+      try {
+        const env = envelope || {};
+        const payloadB64 = payload || env.payload;
+        const buf = Buffer.from(payloadB64, 'base64');
+        const TAG_LEN = 16;
+        const IV_LEN = 12;
+        const tagStart = buf.length - TAG_LEN;
+        const ivStart = tagStart - IV_LEN;
+        ciphertext = ciphertext || buf.slice(0, ivStart).toString('base64');
+        iv = iv || buf.slice(ivStart, tagStart).toString('base64');
+        tag = tag || buf.slice(tagStart).toString('base64');
+        seq = seq ?? env.seq;
+        nonce = nonce || env.nonce;
+        timestamp = timestamp || env.timestamp;
+        messageType = messageType || env.messageType;
+        payload = payload || env.payload;
+      } catch (e) {
+        return res.status(400).json({ success: false, error: 'Invalid envelope format' });
+      }
+    }
 
     // Validate required fields
     if (!recipientId || !ciphertext || !iv || !tag || seq === undefined) {
@@ -81,6 +116,9 @@ export const sendMessage = async (req, res) => {
       iv,
       tag,
       seq,
+      payload: payload || null,
+      nonce: nonce || null,
+      timestamp: timestamp || Date.now(),
       signature: signature || null,
       messageType: messageType || 'text',
     });

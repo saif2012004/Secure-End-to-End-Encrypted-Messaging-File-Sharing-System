@@ -25,13 +25,13 @@ export function randomBytes(len = 32) {
 }
 
 export function concatBytes(...chunks) {
-  const total = chunks.reduce((sum, c) => sum + (c?.length || 0), 0);
+  const arrays = chunks.map((c) => (c instanceof ArrayBuffer ? new Uint8Array(c) : new Uint8Array(c || [])));
+  const total = arrays.reduce((sum, a) => sum + a.byteLength, 0);
   const out = new Uint8Array(total);
   let offset = 0;
-  chunks.forEach((c) => {
-    const arr = c instanceof ArrayBuffer ? new Uint8Array(c) : new Uint8Array(c || []);
+  arrays.forEach((arr) => {
     out.set(arr, offset);
-    offset += arr.length;
+    offset += arr.byteLength;
   });
   return out;
 }

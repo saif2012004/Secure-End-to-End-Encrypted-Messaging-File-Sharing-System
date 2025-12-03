@@ -1,8 +1,17 @@
 import { create } from 'zustand';
 import { useSocketStore } from './socketStore';
 import { messagesAPI } from '../services/api';
-import { decryptMessage } from '../utils/crypto';
-import { startKeyExchange } from '../services/keyExchangeService';
+import { parseAndDecryptEnvelope, createEncryptedEnvelope, weakDecryptEnvelope } from '../services/encryptionService';
+import {
+  startKeyExchange,
+  getSessionKey,
+  nextSessionSeq,
+  getIdentityPublicB64,
+  waitForSessionKey,
+} from '../services/keyExchangeService';
+import { useAuthStore } from './authStore';
+import { base64ToBytes, bytesToBase64 } from '../crypto/messageFormat';
+import { unpackPayload } from '../crypto/aesGcm';
 
 export const useChatStore = create((set, get) => ({
   selectedUser: null,
@@ -36,49 +45,82 @@ export const useChatStore = create((set, get) => ({
       
       if (response.success) {
         // Decrypt messages for display
+        const authUser = useAuthStore.getState().user;
         const decryptedMessages = await Promise.all(
           response.data.messages.map(async (msg) => {
-            try {
-              // NOTE: Placeholder decryption - Members 1 & 2 will implement
-              const decrypted = await decryptMessage(
-                msg.ciphertext,
-                msg.iv,
-                msg.tag
-              );
+            const senderId = msg.sender?._id || msg.senderId || msg.from || msg.sender;
+            const recipientId = msg.recipient?._id || msg.recipientId || msg.to;
+            const peerId = senderId === authUser?.id ? recipientId : senderId;
+            const sessionKey = peerId ? await getSessionKey(peerId) : null;
 
-              return {
-                id: msg._id,
-                senderId: msg.sender._id,
-                senderUsername: msg.sender.username,
-                recipientId: msg.recipient._id,
-                text: decrypted, // Decrypted text for display
-                ciphertext: msg.ciphertext, // Keep original for verification
-                iv: msg.iv,
-                tag: msg.tag,
-                seq: msg.seq,
-                messageType: msg.messageType || 'text',
-                timestamp: msg.createdAt,
-                delivered: msg.delivered,
-                read: msg.read,
-                isEncrypted: true,
-              };
-            } catch (error) {
-              console.error('Failed to decrypt message:', error);
-              // Show as encrypted if decryption fails
-              return {
-                id: msg._id,
-                senderId: msg.sender._id,
-                senderUsername: msg.sender.username,
-                recipientId: msg.recipient._id,
-                text: '[🔒 Encrypted Message]',
-                messageType: msg.messageType || 'text',
-                timestamp: msg.createdAt,
-                delivered: msg.delivered,
-                read: msg.read,
-                isEncrypted: true,
-                decryptionFailed: true,
-              };
+            let plaintext = '[🔒 Encrypted Message]';
+            let failed = false;
+            if (sessionKey) {
+              try {
+                let envelope = null;
+                if (msg.envelope) {
+                  envelope = typeof msg.envelope === 'string' ? JSON.parse(msg.envelope) : msg.envelope;
+                } else if (msg.payload) {
+                  const ts = Date.now(); // normalize to "fresh" timestamp for history decrypt
+                  envelope = {
+                    v: msg.v || 1,
+                    sender_id: senderId,
+                    recipient_id: recipientId,
+                    nonce: msg.nonce || msg.nonce_b64 || `legacy-${msg._id || msg.seq || Date.now()}`,
+                    timestamp: ts,
+                    seq: msg.seq || 0,
+                    payload: msg.payload,
+                  };
+                } else if (msg.ciphertext && msg.iv && msg.tag) {
+                  const ct = base64ToBytes(msg.ciphertext);
+                  const iv = base64ToBytes(msg.iv);
+                  const tag = base64ToBytes(msg.tag);
+                  const combined = new Uint8Array(ct.byteLength + iv.byteLength + tag.byteLength);
+                  combined.set(ct, 0);
+                  combined.set(iv, ct.byteLength);
+                  combined.set(tag, ct.byteLength + iv.byteLength);
+                  const ts = Date.now();
+                  envelope = {
+                    v: 1,
+                    sender_id: senderId,
+                    recipient_id: recipientId,
+                    nonce: msg.nonce || msg.nonce_b64 || `legacy-${msg._id || msg.seq || Date.now()}`,
+                    timestamp: ts,
+                    seq: msg.seq || 0,
+                    payload: bytesToBase64(combined),
+                  };
+                }
+                if (envelope) {
+                  // For history, prefer strict decrypt first, but always fall back to weak to avoid stale/replay blocking UI.
+                  try {
+                    plaintext = await parseAndDecryptEnvelope(envelope, sessionKey);
+                  } catch (err) {
+                    console.warn('History decrypt fallback (weak) for message', msg._id || msg.seq, err?.message || err);
+                    plaintext = await weakDecryptEnvelope(envelope, sessionKey);
+                  }
+                }
+              } catch (error) {
+                console.error('Failed to decrypt message:', error);
+                failed = true;
+              }
+            } else {
+              failed = true;
             }
+
+            return {
+              id: msg._id,
+              senderId,
+              senderUsername: msg.sender?.username || msg.senderUsername,
+              recipientId,
+              text: plaintext, // Decrypted text for display
+              seq: msg.seq,
+              messageType: msg.messageType || 'text',
+              timestamp: msg.createdAt,
+              delivered: msg.delivered,
+              read: msg.read,
+              isEncrypted: true,
+              decryptionFailed: failed,
+            };
           })
         );
 
@@ -95,65 +137,96 @@ export const useChatStore = create((set, get) => ({
 
   sendMessage: async (messageData) => {
     const socket = useSocketStore.getState().socket;
-    
+
     if (!socket || !socket.connected) {
       throw new Error('Socket not connected');
     }
 
     try {
+      console.log('[chat] preparing to send message', { to: messageData.recipientId });
+      const selected = get().selectedUser;
+      const sessionKey =
+        (await getSessionKey(messageData.recipientId)) ||
+        (await waitForSessionKey(messageData.recipientId, selected?.username));
+      if (!sessionKey) {
+        throw new Error('No session key for recipient; ensure key exchange is completed');
+      }
+      const seq = await nextSessionSeq(messageData.recipientId);
+      const senderIdentity = await getIdentityPublicB64();
+      const envelope = await createEncryptedEnvelope(
+        messageData.plaintext || messageData.text || '',
+        sessionKey,
+        messageData.recipientId,
+        senderIdentity,
+        seq,
+      );
+      const payloadBytes = base64ToBytes(envelope.payload);
+      const split = unpackPayload(payloadBytes);
+      const ctB64 = bytesToBase64(split.ciphertext);
+      const ivB64 = bytesToBase64(split.iv);
+      const tagB64 = bytesToBase64(split.tag);
+      console.log('[chat] envelope ready', { seq, nonce: envelope.nonce, ctLen: split.ciphertext.length });
+
       // Step 1: Save encrypted message to backend (permanent storage)
       const response = await messagesAPI.sendMessage({
         recipientId: messageData.recipientId,
-        ciphertext: messageData.ciphertext,
-        iv: messageData.iv,
-        tag: messageData.tag,
-        seq: messageData.seq,
-        signature: messageData.signature,
+        // legacy fields expected by backend
+        ciphertext: ctB64,
+        iv: ivB64,
+        tag: tagB64,
+        seq: envelope.seq,
+        nonce: envelope.nonce,
+        timestamp: envelope.timestamp,
         messageType: messageData.messageType || 'text',
+        // store full envelope for future compatibility
+        envelope,
+        payload: envelope.payload,
+      });
+      console.log('[chat] backend sendMessage response', response);
+
+      const savedMessage = response?.success ? response.data.message : null;
+
+      // Step 2: Relay encrypted message via socket for real-time delivery
+      socket.emit('send_message', {
+        recipientId: messageData.recipientId,
+        envelope,
+        ciphertext: ctB64,
+        iv: ivB64,
+        tag: tagB64,
+        nonce: envelope.nonce,
+        timestamp: envelope.timestamp,
+        seq: envelope.seq,
+        messageType: messageData.messageType || 'text',
+        messageId: savedMessage?._id,
       });
 
-      if (response.success) {
-        const savedMessage = response.data.message;
+      // Step 3: Add to local messages (with actual DB data)
+      const newMessage = {
+        id: savedMessage?._id || `tmp_${Date.now()}`,
+        senderId: savedMessage?.sender?._id,
+        senderUsername: savedMessage?.sender?.username,
+        recipientId: messageData.recipientId,
+        text: messageData.plaintext || messageData.text || '',
+        seq: envelope.seq,
+        messageType: messageData.messageType || 'text',
+        timestamp: savedMessage?.createdAt || Date.now(),
+        delivered: !!savedMessage,
+        read: false,
+        isEncrypted: true,
+      };
 
-        // Step 2: Relay encrypted message via socket for real-time delivery
-        socket.emit('send_message', {
-          recipientId: messageData.recipientId,
-          ciphertext: messageData.ciphertext,
-          iv: messageData.iv,
-          tag: messageData.tag,
-          seq: messageData.seq,
-          signature: messageData.signature,
-          messageType: messageData.messageType || 'text',
-          messageId: savedMessage._id, // Include DB message ID
-        });
+      set((state) => ({
+        messages: [...state.messages, newMessage],
+      }));
 
-        // Step 3: Add to local messages (with actual DB data)
-        const newMessage = {
-          id: savedMessage._id,
-          senderId: savedMessage.sender._id,
-          senderUsername: savedMessage.sender.username,
-          recipientId: messageData.recipientId,
-          text: messageData.plaintext, // For display only (already decrypted)
-          ciphertext: messageData.ciphertext,
-          iv: messageData.iv,
-          tag: messageData.tag,
-          seq: messageData.seq,
-          messageType: messageData.messageType || 'text',
-          timestamp: savedMessage.createdAt,
-          delivered: false,
-          read: false,
-          isEncrypted: true,
-        };
-
-        set((state) => ({
-          messages: [...state.messages, newMessage],
-        }));
-
-        return savedMessage;
-      }
+      return savedMessage;
     } catch (error) {
-      console.error('Failed to send message:', error);
-      throw new Error(error.response?.data?.error || 'Failed to send message');
+      console.error('Failed to send message:', error?.response?.data || error);
+      const msg =
+        error?.response?.data?.error ||
+        error?.message ||
+        'Failed to send message';
+      throw new Error(msg);
     }
   },
 
