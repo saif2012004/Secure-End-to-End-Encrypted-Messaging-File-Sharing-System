@@ -1,0 +1,16 @@
+Replay Attack Screenshot Guide (for browser devtools + Mongo logs)
+Saif wrote this demo on 2nd Dec night
+
+1) Open two browser tabs: Tab A (sender) and Tab B (receiver).
+2) In Tab A, send a message so an envelope is emitted over WebSocket.
+3) In Tab B devtools (Network → WS), select the socket frames and locate the JSON envelope:
+   - Copy the whole payload where nonce looks like 8f3a... and seq is 42.
+   - Take Screenshot #1 showing the frame details with nonce + timestamp.
+4) In Tab B console, paste the captured envelope into a variable: const captured = { ...copied JSON... };
+5) Call parseAndDecryptEnvelope(captured, demoKey) once to simulate the first delivery (should succeed).
+6) Wait 2 seconds, call parseAndDecryptEnvelope(captured, demoKey) again to trigger replay detection.
+   - Take Screenshot #2 of console error "REPLAY_ATTACK_DETECTED" and log line "// This will be rejected because nonce 8f3a... was already seen at timestamp 1733..."
+7) MongoDB side: tail the logs from backend or run db.logs.find({ type: "replay" }).limit(5).pretty()
+   - Take Screenshot #3 showing the persisted replay event with nonce, seq, and sender_id.
+8) Annotate screenshots: highlight nonce reuse and the rejection message.
+9) Save screenshots as replay-1.png, replay-2.png, replay-3.png for the report.
