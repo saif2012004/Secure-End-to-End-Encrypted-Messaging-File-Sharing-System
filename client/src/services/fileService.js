@@ -12,6 +12,7 @@ import {
   encryptFilename,
   decryptFilename,
 } from '../crypto/fileEncryption';
+import { logEvent } from './loggingService';
 
 const DB_NAME = 'securechat_files';
 const STORE_NAME = 'file_transfers';
@@ -93,6 +94,7 @@ export async function uploadEncryptedFile({ file, sessionKeyBytes, socket, recip
   }
   const computedFileId = fileId || (crypto.randomUUID ? crypto.randomUUID() : `file_${Date.now()}`);
   const encryptedNameB64 = await encryptFilename(file.name, sessionKeyBytes);
+  logEvent('file_upload_start', { fileId: computedFileId, name: file.name, size: file.size });
 
   // Persist minimal metadata for resume.
   const existing = await getFileRecord(computedFileId);
@@ -153,6 +155,7 @@ export async function uploadEncryptedFile({ file, sessionKeyBytes, socket, recip
   }
 
   await deleteFileRecord(computedFileId);
+  logEvent('file_upload_complete', { fileId: computedFileId, totalChunks, size: file.size });
   return {
     fileId: computedFileId,
     totalChunks,
@@ -215,6 +218,7 @@ export async function handleIncomingChunk(chunkPacket, sessionKeyBytes, onComple
 
   const receivedCount = Object.keys(receivedMap).length;
   console.log(`Stored chunk ${idx + 1}/${total} for file ${fileId}. Received ${receivedCount}/${total}`);
+  logEvent('file_chunk_received', { fileId, chunk: idx, total, sender: chunkPacket.senderId || chunkPacket.sender_id });
 
   if (receivedCount !== total) {
     return; // wait for more
@@ -251,6 +255,7 @@ export async function handleIncomingChunk(chunkPacket, sessionKeyBytes, onComple
   anchor.click();
   URL.revokeObjectURL(url);
   console.log('File decrypted and saved', filename);
+  logEvent('file_download_complete', { fileId, filename, size: merged.byteLength });
 
   await deleteFileRecord(fileId);
   if (onComplete) onComplete({ fileId, filename, size: merged.byteLength });

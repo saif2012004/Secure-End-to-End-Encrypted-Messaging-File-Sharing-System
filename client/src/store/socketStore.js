@@ -5,6 +5,7 @@ import { parseAndDecryptEnvelope, weakDecryptEnvelope } from '../services/encryp
 import { keyExchangeService, waitForSessionKey } from '../services/keyExchangeService';
 import { handleIncomingChunk as handleEncryptedChunk } from '../services/fileService';
 import { useChatStore } from './chatStore';
+import { logEvent } from '../services/loggingService';
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
 const seenMessages = new Set(); // dedupe incoming socket messages (senderId:seq:nonce)
@@ -119,7 +120,7 @@ export const useSocketStore = create((set, get) => ({
 
         let decrypted;
         try {
-          decrypted = await parseAndDecryptEnvelope(envelope, sessionKey);
+          decrypted = await parseAndDecryptEnvelope(envelope, sessionKey, senderId);
         } catch (err) {
           console.error('Live decrypt failed (strict, no fallback):', err);
           return;
@@ -140,8 +141,10 @@ export const useSocketStore = create((set, get) => ({
 
         seenMessages.add(dedupeKey);
         useChatStore.getState().receiveMessage(message);
+        logEvent('message_decrypted', { senderId, seq: envelope.seq, nonce: envelope.nonce });
       } catch (error) {
         console.error('Failed to decrypt message:', error);
+        logEvent('message_decrypt_failed', { senderId, error: error?.message || String(error) });
       }
     });
 

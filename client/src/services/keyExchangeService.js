@@ -8,6 +8,7 @@ import {
   concatBytes,
 } from '../utils/base64';
 import { useAuthStore } from '../store/authStore';
+import { logEvent } from './loggingService';
 
 const DB_NAME = 'key-exchange-db';
 const DB_VERSION = 1;
@@ -105,6 +106,7 @@ async function ensureIdentityKeys() {
       ['sign'],
     );
     identityCache.self = { publicKey, privateKey, pubB64: stored.pub };
+    logEvent('identity_loaded', { pub: stored.pub });
     return identityCache.self;
   }
 
@@ -118,6 +120,7 @@ async function ensureIdentityKeys() {
   const pubB64 = arrayBufferToBase64(pub);
   await putValue('identity', { id: 'self', pub: pubB64, priv });
   identityCache.self = { publicKey: keyPair.publicKey, privateKey: keyPair.privateKey, pubB64 };
+  logEvent('identity_generated', { pub: pubB64 });
   return identityCache.self;
 }
 
@@ -198,6 +201,11 @@ async function cacheSession(userId, sessionKey, username) {
   } catch (e) {
     console.warn('Failed to clear replay state for', userId, e);
   }
+  logEvent('session_key_cached', {
+    userId,
+    username,
+    key_b64: arrayBufferToBase64(raw),
+  });
 }
 
 async function handleKeInit(payload, meta) {
@@ -212,6 +220,7 @@ async function handleKeInit(payload, meta) {
     return;
   }
   await rememberIncomingNonce(payload.nonce);
+  logEvent('ke_init_received', { from: payload.from || meta.senderId, nonce: payload.nonce, ts, mode: payload.mode || 'signed' });
 
   const insecure = payload.mode === 'insecure' || payload.type === 'KE_INIT_INSECURE';
   if (!insecure && meta.signature) {
@@ -264,6 +273,13 @@ async function handleKeInit(payload, meta) {
 
   // Cache responder side session immediately so we can decrypt early messages
   await cacheSession(payload.from || meta.senderId, rawKeyBytes, meta.senderName || payload.fromName);
+  logEvent('ke_reply_sent', {
+    to: payload.from,
+    nonce: responderNonce,
+    initiatorNonce: payload.nonce,
+    key_b64: arrayBufferToBase64(rawKeyBytes),
+    mode: insecure ? 'insecure' : 'signed',
+  });
 }
 
 async function handleKeReply(payload, meta) {
@@ -287,6 +303,7 @@ async function handleKeReply(payload, meta) {
     const ok = await verifyPayload(payload, meta.signature, payload.identityKey);
     if (!ok) return;
   }
+  logEvent('ke_reply_received', { from: userId, nonce: payload.nonce, initiatorNonce: existing.initiatorNonce, mode: insecure ? 'insecure' : 'signed' });
 
   const derived = await deriveSessionKeys(
     payload.ephPub,
@@ -320,6 +337,7 @@ async function handleKeReply(payload, meta) {
     macKey: derived.macKey,
     sessionKey: derived.sessionKey,
   });
+  logEvent('key_confirm_sent', { to: userId, mac, initiatorNonce: existing.initiatorNonce, responderNonce: payload.nonce });
 }
 
 async function handleKeyConfirm(payload, meta) {
@@ -338,11 +356,13 @@ async function handleKeyConfirm(payload, meta) {
   const valid = await verifyMac(existing.macKey, mac, existing.initiatorNonce, existing.responderNonce);
   if (!valid) {
     console.warn('KEY_CONFIRM MAC failed');
+    logEvent('key_confirm_fail', { from: userId, mac });
     return;
   }
 
   await cacheSession(userId, existing.sessionKey, existing.username || meta.senderName);
   logComplete(existing.username || meta.senderName);
+  logEvent('key_confirm_ok', { from: userId, mac, initiatorNonce: existing.initiatorNonce, responderNonce: existing.responderNonce });
 }
 
 async function handleInbound(data) {
@@ -413,6 +433,7 @@ export async function startKeyExchange(userId, username, opts = {}) {
     publicKey: JSON.stringify(payload),
     signature: signature || undefined,
   });
+  logEvent('ke_init_sent', { to: userId, nonce, mode: opts.insecure ? 'insecure' : 'signed' });
 }
 
 export const startInsecureKeyExchange = (userId, username) => startKeyExchange(userId, username, { insecure: true });

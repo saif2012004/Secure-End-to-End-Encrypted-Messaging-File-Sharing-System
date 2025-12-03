@@ -4,6 +4,7 @@
 import { encryptMessage, decryptMessage, packPayload, unpackPayload } from '../crypto/aesGcm';
 import { getRandomNonce, getSeqNumber } from '../crypto/random';
 import { buildEnvelope, bytesToBase64, base64ToBytes, isMessageFresh, validateEnvelopeShape } from '../crypto/messageFormat';
+import { logEvent } from './loggingService';
 
 const STORE_NAME = 'replay_protection';
 const DB_NAME = 'securechat_replay_db';
@@ -55,9 +56,9 @@ async function withStore(mode, fn) {
   });
 }
 
-async function loadReplayRecord(userId) {
+async function loadReplayRecord(key) {
   return withStore('readonly', (store) => new Promise((resolve, reject) => {
-    const req = store.get(userId);
+    const req = store.get(key);
     req.onsuccess = () => resolve(req.result || null);
     req.onerror = () => reject(req.error || new Error('Failed to load replay record'));
   }));
@@ -72,10 +73,10 @@ async function saveReplayRecord(record) {
 }
 
 // Clear stored nonce/seq for a given user (e.g., after a new session key)
-export async function clearReplayState(userId) {
-  if (!userId) return;
+export async function clearReplayState(replayKey) {
+  if (!replayKey) return;
   return withStore('readwrite', (store) => new Promise((resolve, reject) => {
-    const req = store.delete(userId);
+    const req = store.delete(replayKey);
     req.onsuccess = () => resolve(true);
     req.onerror = () => reject(req.error || new Error('Failed to clear replay record'));
   }));
@@ -121,30 +122,36 @@ export async function createEncryptedEnvelope(
 /**
  * Verify replay protections, then decrypt.
  */
-export async function parseAndDecryptEnvelope(envelopeJson, sessionKeyUint8) {
+export async function parseAndDecryptEnvelope(envelopeJson, sessionKeyUint8, replayScope) {
   let env;
   try {
     env = typeof envelopeJson === 'string' ? JSON.parse(envelopeJson) : envelopeJson;
   } catch (err) {
-    throw new Error(`Invalid envelope JSON: ${err.message}`);
+    const msg = `Invalid envelope JSON: ${err.message}`;
+    logEvent('decrypt_error', { reason: msg });
+    throw new Error(msg);
   }
 
   const validationErrors = validateEnvelopeShape(env);
   if (validationErrors.length) {
-    throw new Error(`Envelope validation failed: ${validationErrors.join('; ')}`);
+    const msg = `Envelope validation failed: ${validationErrors.join('; ')}`;
+    logEvent('decrypt_error', { sender: env?.sender_id, reason: msg });
+    throw new Error(msg);
   }
 
   if (!isMessageFresh(env.timestamp)) {
     console.warn('Dropping stale/suspicious message timestamp', env.timestamp, 'now:', Date.now());
+    logEvent('replay_detected', { sender: env.sender_id, nonce: env.nonce, seq: env.seq, reason: 'stale_timestamp' });
     throw new Error('REPLAY_ATTACK_DETECTED');
   }
 
-  const senderId = env.sender_id;
+  const replayKey = replayScope || env.sender_id;
+  const senderId = replayKey;
   const nonce_b64 = env.nonce;
 
   let replayRecord = null;
   try {
-    replayRecord = await loadReplayRecord(senderId);
+    replayRecord = await loadReplayRecord(replayKey);
   } catch (err) {
     console.error('Replay record load failed:', err);
     // We still proceed but keep a note. If storage is unavailable we cannot enforce replay protections fully.
@@ -155,11 +162,13 @@ export async function parseAndDecryptEnvelope(envelopeJson, sessionKeyUint8) {
 
   if (seenNonces.includes(nonce_b64)) {
     console.error('Replay nonce detected for sender:', senderId, 'nonce:', nonce_b64);
+    logEvent('replay_detected', { sender: senderId, nonce: nonce_b64, seq: env.seq, reason: 'nonce_reuse' });
     throw new Error('REPLAY_ATTACK_DETECTED');
   }
 
   if (env.seq <= lastSeq) {
     console.error(`Replay seq detected for sender ${senderId}: incoming ${env.seq} <= stored ${lastSeq}`);
+    logEvent('replay_detected', { sender: senderId, nonce: nonce_b64, seq: env.seq, lastSeq, reason: 'seq_reuse' });
     throw new Error('REPLAY_ATTACK_DETECTED');
   }
 
@@ -171,6 +180,7 @@ export async function parseAndDecryptEnvelope(envelopeJson, sessionKeyUint8) {
   } catch (err) {
     const wrapped = new Error(`Decrypt failed: ${err.message || err}`);
     wrapped.cause = err;
+    logEvent('decrypt_error', { sender: senderId, nonce: nonce_b64, seq: env.seq, reason: err.message || String(err) });
     throw wrapped;
   }
 
@@ -180,7 +190,7 @@ export async function parseAndDecryptEnvelope(envelopeJson, sessionKeyUint8) {
     // keep last 200 nonces to avoid unbounded growth
     const cappedNonces = updatedNonces.length > 200 ? updatedNonces.slice(updatedNonces.length - 200) : updatedNonces;
     await saveReplayRecord({
-      id: senderId,
+      id: replayKey,
       lastSeq: env.seq,
       nonces: cappedNonces,
     });

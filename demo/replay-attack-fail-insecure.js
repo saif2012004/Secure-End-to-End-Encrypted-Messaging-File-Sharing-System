@@ -1,8 +1,13 @@
-// Saif wrote this demo on 2nd Dec night
-// This mirrors the previous replay but uses weakDecryptEnvelope (no nonce/seq/timestamp checks).
+// Saif wrote this demo on 2nd Dec night (updated to run in Node only, no browser deps)
+// This mirrors the secure replay demo but uses a weak decrypt (no nonce/seq/timestamp checks).
 // Expected result: replay will be ACCEPTED even though it's a duplicate.
 
-import { weakDecryptEnvelope } from '../client/src/services/encryptionService';
+async function weakDecryptEnvelope(envelope, sessionKeyBytes) {
+  // sessionKeyBytes unused; this is an insecure demo
+  const env = envelope || {};
+  if (!env.payload) throw new Error('Missing payload');
+  return `PLAINTEXT(${env.payload})`;
+}
 
 const demoSessionKey = new Uint8Array(32).fill(9);
 

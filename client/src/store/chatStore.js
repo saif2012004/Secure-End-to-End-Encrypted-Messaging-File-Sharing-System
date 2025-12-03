@@ -93,7 +93,7 @@ export const useChatStore = create((set, get) => ({
                 if (envelope) {
                   // For history, prefer strict decrypt first, but always fall back to weak to avoid stale/replay blocking UI.
                   try {
-                    plaintext = await parseAndDecryptEnvelope(envelope, sessionKey);
+                    plaintext = await parseAndDecryptEnvelope(envelope, sessionKey, peerId);
                   } catch (err) {
                     console.warn('History decrypt fallback (weak) for message', msg._id || msg.seq, err?.message || err);
                     plaintext = await weakDecryptEnvelope(envelope, sessionKey);
