@@ -1,0 +1,34 @@
+// Saif wrote this demo on 2nd Dec night
+
+Custom Envelope Layout (v1)
+---------------------------
+{
+  v: 1,
+  sender_id: "base64 public key or userId",
+  recipient_id: "user id",
+  nonce: base64(16 bytes),
+  timestamp: Date.now(),
+  seq: integer,
+  payload: base64(ciphertext || iv || tag)
+}
+
+ASCII Diagram:
+
+ v | sender_id | recipient_id | nonce | timestamp | seq | payload
+ |       |             |        |         |        |       |
+ |       |             |        |         |        |       +---> base64 of:
+ |       |             |        |         |        |            [ciphertext][iv][tag]
+ |       |             |        |         |        |
+ |       |             |        |         |        +-----------> sequence number per session
+ |       |             |        |         +--------------------> ms since epoch (freshness window ±60s)
+ |       |             |        +------------------------------> 16-byte random nonce (replay protection)
+ |       |             +---------------------------------------> recipient identifier
+ |       +-----------------------------------------------------> sender public key / id
+ +-------------------------------------------------------------> envelope version (currently 1)
+
+Notes:
+- ciphertext length = variable per message
+- iv length = 12 bytes (96 bits)
+- tag length = 16 bytes (128 bits)
+- payload = ciphertext || iv || tag, then base64
+- // This will be rejected because nonce 8f3a... was already seen at timestamp 1733...
