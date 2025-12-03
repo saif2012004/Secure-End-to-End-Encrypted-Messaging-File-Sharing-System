@@ -1,10 +1,10 @@
 import { create } from 'zustand';
 import { io } from 'socket.io-client';
-import { useChatStore } from './chatStore';
 import { useAuthStore } from './authStore';
 import { parseAndDecryptEnvelope, weakDecryptEnvelope } from '../services/encryptionService';
 import { keyExchangeService, waitForSessionKey } from '../services/keyExchangeService';
 import { handleIncomingChunk as handleEncryptedChunk } from '../services/fileService';
+import { useChatStore } from './chatStore';
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
 const seenMessages = new Set(); // dedupe incoming socket messages (senderId:seq:nonce)
@@ -121,8 +121,8 @@ export const useSocketStore = create((set, get) => ({
         try {
           decrypted = await parseAndDecryptEnvelope(envelope, sessionKey);
         } catch (err) {
-          console.warn('Live decrypt fallback (weak) for message', err?.message || err);
-          decrypted = await weakDecryptEnvelope(envelope, sessionKey);
+          console.error('Live decrypt failed (strict, no fallback):', err);
+          return;
         }
 
         const message = {
@@ -160,9 +160,20 @@ export const useSocketStore = create((set, get) => ({
         }
         handleEncryptedChunk(data, sessionKey, (info) => {
           console.log('File download complete:', info);
+          useChatStore.getState().receiveMessage({
+            id: data.messageId || data.fileId || `file_${Date.now()}`,
+            senderId,
+            senderUsername: data.senderUsername,
+            recipientId: useAuthStore.getState().user?.id,
+            text: 'Encrypted file received',
+            messageType: 'file',
+            fileName: info.filename,
+            fileSize: info.size,
+            timestamp: Date.now(),
+            isEncrypted: true,
+          });
         });
       }).catch((err) => console.error('File chunk decrypt error', err));
-      useChatStore.getState().receiveFileChunk(data);
     });
 
     socket.on('file:chunk-sent', (data) => {

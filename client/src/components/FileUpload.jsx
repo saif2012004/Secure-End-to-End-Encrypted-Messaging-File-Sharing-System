@@ -1,5 +1,7 @@
 import { useState, useRef } from 'react';
 import { useSocketStore } from '../store/socketStore';
+import { useAuthStore } from '../store/authStore';
+import { useChatStore } from '../store/chatStore';
 import { uploadEncryptedFile } from '../services/fileService';
 import { keyExchangeService } from '../services/keyExchangeService';
 import '../styles/FileUpload.css';
@@ -11,6 +13,8 @@ function FileUpload({ recipientId, sessionKeyBytes, onClose }) {
   const [status, setStatus] = useState('');
   const fileInputRef = useRef(null);
   const { socket } = useSocketStore();
+  const authUser = useAuthStore((s) => s.user);
+  const addMessage = useChatStore((s) => s.receiveMessage);
 
   const handleFileSelect = (e) => {
     const selectedFile = e.target.files[0];
@@ -39,7 +43,7 @@ function FileUpload({ recipientId, sessionKeyBytes, onClose }) {
       if (!keyBytes) {
         throw new Error('No session key for recipient; finish key exchange first.');
       }
-      await uploadEncryptedFile({
+      const result = await uploadEncryptedFile({
         file,
         sessionKeyBytes: keyBytes,
         socket,
@@ -48,6 +52,19 @@ function FileUpload({ recipientId, sessionKeyBytes, onClose }) {
       });
 
       setStatus('Upload complete (encrypted)');
+      // Show in chat as a file message
+      addMessage({
+        id: result.fileId,
+        senderId: authUser?.id,
+        senderUsername: authUser?.username,
+        recipientId,
+        text: 'Encrypted file sent',
+        messageType: 'file',
+        fileName: file.name,
+        fileSize: file.size,
+        timestamp: Date.now(),
+        isEncrypted: true,
+      });
       alert('File uploaded successfully!');
       onClose();
     } catch (error) {

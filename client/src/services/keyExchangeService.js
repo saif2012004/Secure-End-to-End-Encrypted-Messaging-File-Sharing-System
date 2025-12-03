@@ -1,4 +1,5 @@
 import { hkdf } from '../utils/hkdf';
+import { clearReplayState } from './encryptionService';
 import {
   arrayBufferToBase64,
   base64ToArrayBuffer,
@@ -191,6 +192,12 @@ async function cacheSession(userId, sessionKey, username) {
   const cryptoKey = await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
   sessionCache.set(userId, { key: cryptoKey, keyBytes: raw, seq: 0, username });
   console.log('[keyx] session key cached for', username || userId);
+  // Reset replay tracking for this peer when a new session key is established
+  try {
+    await clearReplayState(userId);
+  } catch (e) {
+    console.warn('Failed to clear replay state for', userId, e);
+  }
 }
 
 async function handleKeInit(payload, meta) {

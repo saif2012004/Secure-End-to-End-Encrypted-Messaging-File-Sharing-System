@@ -153,7 +153,13 @@ export async function uploadEncryptedFile({ file, sessionKeyBytes, socket, recip
   }
 
   await deleteFileRecord(computedFileId);
-  return { fileId: computedFileId, totalChunks };
+  return {
+    fileId: computedFileId,
+    totalChunks,
+    encryptedName: encryptedNameB64,
+    fileSize: file.size,
+    mimeType: file.type || 'application/octet-stream',
+  };
 }
 
 /**

@@ -71,6 +71,16 @@ async function saveReplayRecord(record) {
   }));
 }
 
+// Clear stored nonce/seq for a given user (e.g., after a new session key)
+export async function clearReplayState(userId) {
+  if (!userId) return;
+  return withStore('readwrite', (store) => new Promise((resolve, reject) => {
+    const req = store.delete(userId);
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => reject(req.error || new Error('Failed to clear replay record'));
+  }));
+}
+
 /**
  * Create an outbound envelope with encryption and packing.
  */
