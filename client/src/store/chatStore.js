@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { useSocketStore } from './socketStore';
 import { messagesAPI } from '../services/api';
 import { decryptMessage } from '../utils/crypto';
+import { startKeyExchange } from '../services/keyExchangeService';
 
 export const useChatStore = create((set, get) => ({
   selectedUser: null,
@@ -19,6 +20,9 @@ export const useChatStore = create((set, get) => ({
     if (socketStore.socket?.connected) {
       socketStore.joinRoom(user.id);
     }
+
+    // Kick off key exchange if needed
+    startKeyExchange(user.id, user.username).catch((err) => console.error('Failed to start key exchange', err));
     
     // Fetch existing messages from backend
     await get().fetchMessages(user.id);

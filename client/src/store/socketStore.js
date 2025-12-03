@@ -3,6 +3,7 @@ import { io } from 'socket.io-client';
 import { useChatStore } from './chatStore';
 import { useAuthStore } from './authStore';
 import { decryptMessage } from '../utils/crypto';
+import { keyExchangeService } from '../services/keyExchangeService';
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
 
@@ -19,9 +20,7 @@ export const useSocketStore = create((set, get) => ({
     }
 
     const socket = io(SOCKET_URL, {
-      auth: {
-        token,
-      },
+      auth: { token },
       reconnection: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
@@ -29,12 +28,13 @@ export const useSocketStore = create((set, get) => ({
 
     // Connection events
     socket.on('connect', () => {
-      console.log('✅ Socket connected:', socket.id);
+      console.log('Socket connected:', socket.id);
       set({ isConnected: true });
+      keyExchangeService.attachSocket(socket);
     });
 
     socket.on('disconnect', () => {
-      console.log('❌ Socket disconnected');
+      console.log('Socket disconnected');
       set({ isConnected: false });
     });
 
@@ -45,20 +45,19 @@ export const useSocketStore = create((set, get) => ({
 
     // Room events
     socket.on('room:joined', (data) => {
-      console.log('✅ Joined room:', data.roomName);
+      console.log('Joined room:', data.roomName);
     });
 
     socket.on('room:user-ready', (data) => {
-      console.log('👤 User ready in room:', data.username);
+      console.log('User ready in room:', data.username);
     });
 
     // Message events
     socket.on('receive_message', async (data) => {
-      console.log('📨 Encrypted message received:', data);
+      console.log('Encrypted message received:', data);
 
       try {
         // NOTE: Placeholder decryption function
-        // Members 1 & 2 will implement actual decryption
         const decrypted = await decryptMessage(
           data.ciphertext,
           data.iv,
@@ -84,31 +83,31 @@ export const useSocketStore = create((set, get) => ({
     });
 
     socket.on('message:sent', (data) => {
-      console.log('✅ Message sent:', data);
+      console.log('Message sent:', data);
     });
 
     // File events
     socket.on('receive_file_chunk', (data) => {
-      console.log('📎 File chunk received:', data);
+      console.log('File chunk received:', data);
       useChatStore.getState().receiveFileChunk(data);
     });
 
     socket.on('file:chunk-sent', (data) => {
-      console.log('✅ File chunk sent:', data);
+      console.log('File chunk sent:', data);
     });
 
     socket.on('file:upload-complete', (data) => {
-      console.log('✅ File upload complete:', data);
+      console.log('File upload complete:', data);
     });
 
     // User presence
     socket.on('user:online', (data) => {
-      console.log('👋 User online:', data.username);
+      console.log('User online:', data.username);
       // Update user status in UI
     });
 
     socket.on('user:offline', (data) => {
-      console.log('👋 User offline:', data.username);
+      console.log('User offline:', data.username);
       // Update user status in UI
     });
 
@@ -119,8 +118,7 @@ export const useSocketStore = create((set, get) => ({
 
     // Key exchange
     socket.on('key-exchange:receive', (data) => {
-      console.log('🔑 Public key received from:', data.senderUsername);
-      // TODO: Store public key and verify signature
+      keyExchangeService.handleInbound(data).catch((err) => console.error('Key exchange receive error', err));
     });
 
     // Delivery confirmations
@@ -138,17 +136,17 @@ export const useSocketStore = create((set, get) => ({
 
     // Error events
     socket.on('message:error', (data) => {
-      console.error('❌ Message error:', data.error);
+      console.error('Message error:', data.error);
       alert(`Message error: ${data.error}`);
     });
 
     socket.on('file:error', (data) => {
-      console.error('❌ File error:', data.error);
+      console.error('File error:', data.error);
       alert(`File error: ${data.error}`);
     });
 
     socket.on('room:error', (data) => {
-      console.error('❌ Room error:', data.error);
+      console.error('Room error:', data.error);
     });
 
     set({ socket });
@@ -190,4 +188,3 @@ export const useSocketStore = create((set, get) => ({
     }
   },
 }));
-

@@ -1,0 +1,15 @@
+MITM with Burp Suite (WebSocket) – quick student notes
+-------------------------------------------------------
+1) Open Burp → Proxy → Options → Proxy Listeners → Add → bind to 127.0.0.1:8081 (leave "support invisible proxying" checked so WS handshakes slide through).
+2) Proxy → Intercept → make sure "Intercept is on". Keep the default "toggle hotkey" visible for the screenshot.
+3) Install Burp's CA cert in the browser: Proxy → Proxy settings → Import / export CA cert → Export DER → double‑click in Windows → install into "Trusted Root Certification Authorities".
+4) Point the browser / client at the proxy: set system/browser HTTP(S) proxy to 127.0.0.1:8081. For Node demo, run with `HTTP_PROXY=http://127.0.0.1:8081` so the WebSocket handshake is intercepted.
+5) Reproduce the handshake: run `node mitm-demos/mitm-attack-insecure.js` so the WS clients connect. Burp should grab the initial HTTP Upgrade request (screenshot: Intercept tab showing GET / HTTP/1.1 Upgrade: websocket).
+6) Forward the request; open Proxy → WebSockets history to watch frames. Highlight a `{"type":"pubkey"...}` frame and annotate "attacker swaps this in real life".
+7) Optional tamper: right‑click a WS frame → "Send to Repeater" → edit JSON (e.g., replace pubKey) → Send → screenshot the modified frame + notes "Burp made the downgrade".
+8) When done, click "Intercept is off" so normal traffic resumes. Save the project file for evidence if needed.
+
+Screenshots to capture for the report
+- Intercept tab with the Upgrade request paused.
+- WebSockets history showing the JSON frames.
+- Repeater view where I edited the `pubKey`.
