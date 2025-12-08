@@ -1,0 +1,21 @@
+Wireshark capture tips for the MITM demo
+---------------------------------------
+Goal: grab only the WebSocket handshake + our JSON frames so the screenshots look clean.
+
+1) Start capture on loopback (Npcap Loopback Adapter) before running the script.
+2) Use this display filter for the insecure demo (port 9090):
+     tcp.port == 9090 || http.websocket
+   For the signed demo swap to port 9091:
+     tcp.port == 9091 || http.websocket
+3) To highlight our JSON messages, add a contains filter:
+     (tcp.port == 9090 || tcp.port == 9091) && frame contains "pubkey"
+   (This catches the `{"type":"pubkey"...}` payloads the report talks about.)
+4) Right‑click the HTTP 101 Switching Protocols packet → Follow → TCP Stream → save screenshot showing the Upgrade headers.
+5) Right‑click any WebSocket data frame → "Show packet bytes" → screenshot the plaintext JSON (works because insecure demo is unsigned).
+6) Optional: in the secure demo you can point out that the frame shows a signature + timestamp, but the attack fails (tie it back to the console output).
+7) When done, stop capture → File → Export Specified Packets → PCAPNG. Label the file "mitm-demo-capture" for the appendix.
+
+Screenshot checklist
+- One shot of the display filter bar with the filter text typed in.
+- One shot of the HTTP 101 Upgrade packet detail.
+- One shot of a WebSocket frame showing the JSON content.

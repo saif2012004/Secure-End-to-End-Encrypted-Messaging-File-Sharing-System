@@ -1,16 +1,20 @@
 import { useState, useRef } from 'react';
+import { useSocketStore } from '../store/socketStore';
+import { useAuthStore } from '../store/authStore';
 import { useChatStore } from '../store/chatStore';
-import { encryptFile } from '../utils/crypto';
+import { uploadEncryptedFile } from '../services/fileService';
+import { keyExchangeService } from '../services/keyExchangeService';
 import '../styles/FileUpload.css';
 
-const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
-
-function FileUpload({ recipientId, onClose }) {
+function FileUpload({ recipientId, sessionKeyBytes, onClose }) {
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState('');
   const fileInputRef = useRef(null);
-  const { sendFileChunk } = useChatStore();
+  const { socket } = useSocketStore();
+  const authUser = useAuthStore((s) => s.user);
+  const addMessage = useChatStore((s) => s.receiveMessage);
 
   const handleFileSelect = (e) => {
     const selectedFile = e.target.files[0];
@@ -29,48 +33,43 @@ function FileUpload({ recipientId, onClose }) {
 
     setUploading(true);
     setProgress(0);
+    setStatus('Encrypting and uploading...');
 
     try {
-      const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-      const messageId = `msg_${Date.now()}`;
-
-      // Read and upload file in chunks
-      for (let i = 0; i < totalChunks; i++) {
-        const start = i * CHUNK_SIZE;
-        const end = Math.min(start + CHUNK_SIZE, file.size);
-        const chunk = file.slice(start, end);
-
-        // Read chunk as ArrayBuffer
-        const arrayBuffer = await chunk.arrayBuffer();
-        const uint8Array = new Uint8Array(arrayBuffer);
-
-        // NOTE: Placeholder encryption function
-        // Members 1 & 2 will implement actual encryption
-        const encrypted = await encryptFile(uint8Array, recipientId);
-
-        // Send encrypted chunk
-        await sendFileChunk({
-          recipientId,
-          messageId,
-          chunkNumber: i,
-          totalChunks,
-          encryptedData: encrypted.ciphertext,
-          iv: encrypted.iv,
-          tag: encrypted.tag,
-          hash: encrypted.hash,
-          fileName: file.name,
-          fileSize: file.size,
-          mimeType: file.type,
-        });
-
-        // Update progress
-        setProgress(Math.round(((i + 1) / totalChunks) * 100));
+      const keyBytes =
+        sessionKeyBytes ||
+        (await keyExchangeService.getSessionKey(recipientId)) ||
+        (await keyExchangeService.waitForSessionKey(recipientId, '', 5000));
+      if (!keyBytes) {
+        throw new Error('No session key for recipient; finish key exchange first.');
       }
+      const result = await uploadEncryptedFile({
+        file,
+        sessionKeyBytes: keyBytes,
+        socket,
+        recipientId,
+        onProgress: (pct) => setProgress(pct),
+      });
 
+      setStatus('Upload complete (encrypted)');
+      // Show in chat as a file message
+      addMessage({
+        id: result.fileId,
+        senderId: authUser?.id,
+        senderUsername: authUser?.username,
+        recipientId,
+        text: 'Encrypted file sent',
+        messageType: 'file',
+        fileName: file.name,
+        fileSize: file.size,
+        timestamp: Date.now(),
+        isEncrypted: true,
+      });
       alert('File uploaded successfully!');
       onClose();
     } catch (error) {
       console.error('File upload failed:', error);
+      setStatus(error.message || 'Upload failed');
       alert('File upload failed. Please try again.');
     } finally {
       setUploading(false);
@@ -83,7 +82,7 @@ function FileUpload({ recipientId, onClose }) {
     <div className="file-upload-overlay" onClick={onClose}>
       <div className="file-upload-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h3>📎 Upload Encrypted File</h3>
+          <h3>Upload Encrypted File</h3>
           <button className="btn-close" onClick={onClose}>
             ✕
           </button>
@@ -93,7 +92,7 @@ function FileUpload({ recipientId, onClose }) {
           {!file ? (
             <div className="file-drop-zone" onClick={() => fileInputRef.current?.click()}>
               <div className="drop-zone-content">
-                <span className="upload-icon">📁</span>
+                <span className="upload-icon">Upload</span>
                 <p>Click to select a file</p>
                 <span className="file-hint">Max size: 10MB</span>
               </div>
@@ -107,7 +106,7 @@ function FileUpload({ recipientId, onClose }) {
           ) : (
             <div className="file-preview">
               <div className="file-info">
-                <span className="file-icon">📄</span>
+                <span className="file-icon">File</span>
                 <div className="file-details">
                   <p className="file-name">{file.name}</p>
                   <p className="file-size">
@@ -126,6 +125,7 @@ function FileUpload({ recipientId, onClose }) {
                     />
                   </div>
                   <p className="progress-text">{progress}% uploaded</p>
+                  <p className="status-text">{status}</p>
                 </div>
               )}
 
@@ -142,7 +142,7 @@ function FileUpload({ recipientId, onClose }) {
                   onClick={handleUpload}
                   disabled={uploading}
                 >
-                  {uploading ? 'Uploading...' : '🔒 Encrypt & Upload'}
+                  {uploading ? 'Uploading...' : 'Encrypt & Upload'}
                 </button>
               </div>
             </div>
@@ -151,7 +151,7 @@ function FileUpload({ recipientId, onClose }) {
 
         <div className="modal-footer">
           <p className="encryption-notice">
-            🔒 Files are encrypted before upload
+            Files are encrypted before upload
           </p>
         </div>
       </div>

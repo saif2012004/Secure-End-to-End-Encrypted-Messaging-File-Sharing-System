@@ -37,6 +37,17 @@ const messageSchema = new mongoose.Schema(
       type: String,
       required: [true, 'Authentication tag is required'],
     },
+    // Optional encrypted payload blob (ciphertext||iv||tag) for envelope-based clients
+    payload: {
+      type: String,
+    },
+    // Optional nonce/timestamp carried with envelope
+    nonce: {
+      type: String,
+    },
+    timestamp: {
+      type: Number,
+    },
     // Sequence number for replay attack prevention
     seq: {
       type: Number,

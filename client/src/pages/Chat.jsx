@@ -6,6 +6,7 @@ import UserSidebar from '../components/UserSidebar';
 import MessageList from '../components/MessageList';
 import MessageInput from '../components/MessageInput';
 import FileUpload from '../components/FileUpload';
+import { waitForSessionKey, getSessionKey } from '../services/keyExchangeService';
 import '../styles/Chat.css';
 
 function Chat() {
@@ -13,6 +14,7 @@ function Chat() {
   const { selectedUser, messages, isLoadingMessages, messagesError } = useChatStore();
   const { socket, connect, disconnect, isConnected } = useSocketStore();
   const [showFileUpload, setShowFileUpload] = useState(false);
+  const [uploadSessionKey, setUploadSessionKey] = useState(null);
 
   // Connect to Socket.io on mount
   useEffect(() => {
@@ -27,6 +29,23 @@ function Chat() {
     disconnect();
     logout();
   };
+
+  useEffect(() => {
+    let ignore = false;
+    (async () => {
+      if (!showFileUpload || !selectedUser) return;
+      // Try to obtain session key for file encryption
+      const keyBytes =
+        (await getSessionKey(selectedUser.id)) ||
+        (await waitForSessionKey(selectedUser.id, selectedUser.username, 5000));
+      if (!ignore) setUploadSessionKey(keyBytes || null);
+      if (!keyBytes) {
+        alert('Session key not ready; complete key exchange first.');
+        setShowFileUpload(false);
+      }
+    })();
+    return () => { ignore = true; };
+  }, [showFileUpload, selectedUser]);
 
   return (
     <div className="chat-container">
@@ -68,6 +87,7 @@ function Chat() {
             {showFileUpload && (
               <FileUpload
                 recipientId={selectedUser.id}
+                sessionKeyBytes={uploadSessionKey}
                 onClose={() => setShowFileUpload(false)}
               />
             )}
