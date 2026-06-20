@@ -6,12 +6,17 @@ import {
   startKeyExchange,
   getSessionKey,
   nextSessionSeq,
+  ensureSeqFloor,
   getIdentityPublicB64,
+  getPeerIdentity,
+  signData,
+  verifyData,
   waitForSessionKey,
 } from '../services/keyExchangeService';
 import { useAuthStore } from './authStore';
 import { base64ToBytes, bytesToBase64 } from '../crypto/messageFormat';
 import { unpackPayload } from '../crypto/aesGcm';
+import { cachePlaintext, getCachedPlaintext } from '../services/messageCache';
 
 export const useChatStore = create((set, get) => ({
   selectedUser: null,
@@ -23,7 +28,7 @@ export const useChatStore = create((set, get) => ({
 
   setSelectedUser: async (user) => {
     set({ selectedUser: user, messages: [], isLoadingMessages: true, messagesError: null });
-    
+
     // Join the socket room for this user
     const socketStore = useSocketStore.getState();
     if (socketStore.socket?.connected) {
@@ -32,9 +37,75 @@ export const useChatStore = create((set, get) => ({
 
     // Kick off key exchange if needed
     startKeyExchange(user.id, user.username).catch((err) => console.error('Failed to start key exchange', err));
-    
+
     // Fetch existing messages from backend
     await get().fetchMessages(user.id);
+
+    // Mark this conversation as read locally (clear unread badge)
+    get().clearUnread(user.id);
+  },
+
+  // Load the list of recent conversations (sidebar)
+  fetchConversations: async () => {
+    try {
+      const response = await messagesAPI.getConversations();
+      if (!response.success) return;
+      const authUser = useAuthStore.getState().user;
+
+      const conversations = response.data.conversations
+        .map((c) => {
+          const p = c.partner || {};
+          const last = c.lastMessage || {};
+          const preview =
+            last.messageType === 'file' ? '📎 Encrypted file' : '🔒 Encrypted message';
+          return {
+            partner: {
+              id: p._id || p.id,
+              username: p.username,
+              email: p.email,
+              isOnline: !!p.isOnline,
+              lastSeen: p.lastSeen,
+            },
+            lastMessage: {
+              text: preview,
+              messageType: last.messageType || 'text',
+              createdAt: last.createdAt,
+              fromMe: (last.sender?._id || last.sender) === authUser?.id,
+            },
+            unreadCount: c.unreadCount || 0,
+            updatedAt: last.createdAt || c.updatedAt,
+          };
+        })
+        .filter((c) => c.partner.id && c.partner.id !== authUser?.id)
+        .sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+
+      set({ conversations });
+    } catch (error) {
+      console.error('Failed to fetch conversations:', error);
+    }
+  },
+
+  // Update a user's online/offline status across the UI
+  setUserPresence: (userId, isOnline, lastSeen) => {
+    set((state) => ({
+      conversations: state.conversations.map((c) =>
+        c.partner.id === userId
+          ? { ...c, partner: { ...c.partner, isOnline, lastSeen: lastSeen || c.partner.lastSeen } }
+          : c
+      ),
+      selectedUser:
+        state.selectedUser?.id === userId
+          ? { ...state.selectedUser, isOnline, lastSeen: lastSeen || state.selectedUser.lastSeen }
+          : state.selectedUser,
+    }));
+  },
+
+  clearUnread: (userId) => {
+    set((state) => ({
+      conversations: state.conversations.map((c) =>
+        c.partner.id === userId ? { ...c, unreadCount: 0 } : c
+      ),
+    }));
   },
 
   fetchMessages: async (userId) => {
@@ -107,6 +178,26 @@ export const useChatStore = create((set, get) => ({
               failed = true;
             }
 
+            // Persistent history: cache successful decrypts; fall back to cache on failure
+            if (!failed && plaintext && plaintext !== '[🔒 Encrypted Message]') {
+              cachePlaintext(msg._id, plaintext);
+            } else {
+              const cached = await getCachedPlaintext(msg._id);
+              if (cached != null) {
+                plaintext = cached;
+                failed = false;
+              }
+            }
+
+            // Verify the sender's digital signature over the payload
+            let verified = false;
+            if (senderId === authUser?.id) {
+              verified = true; // our own message
+            } else if (msg.signature && msg.payload) {
+              const senderPub = await getPeerIdentity(senderId);
+              if (senderPub) verified = await verifyData(msg.payload, msg.signature, senderPub);
+            }
+
             return {
               id: msg._id,
               senderId,
@@ -120,11 +211,33 @@ export const useChatStore = create((set, get) => ({
               read: msg.read,
               isEncrypted: true,
               decryptionFailed: failed,
+              verified,
             };
           })
         );
 
         set({ messages: decryptedMessages, isLoadingMessages: false });
+
+        // Raise the outgoing seq counter above the highest seq we've already used
+        // with this peer, so the next message can't collide with stored ones.
+        const myMaxSeq = response.data.messages.reduce((max, msg) => {
+          const sId = msg.sender?._id || msg.senderId || msg.sender;
+          const s = Number(msg.seq);
+          return sId === authUser?.id && Number.isFinite(s) && s > max ? s : max;
+        }, 0);
+        if (myMaxSeq > 0) {
+          ensureSeqFloor(userId, myMaxSeq).catch((e) => console.warn('ensureSeqFloor failed', e));
+        }
+
+        // Send read receipts for any unread incoming messages
+        const socket = useSocketStore.getState().socket;
+        if (socket?.connected) {
+          decryptedMessages.forEach((m) => {
+            if (m.id && m.recipientId === authUser?.id && m.senderId !== authUser?.id && !m.read) {
+              socket.emit('message:read', { messageId: m.id, senderId: m.senderId });
+            }
+          });
+        }
       }
     } catch (error) {
       console.error('Failed to fetch messages:', error);
@@ -165,6 +278,8 @@ export const useChatStore = create((set, get) => ({
       const ctB64 = bytesToBase64(split.ciphertext);
       const ivB64 = bytesToBase64(split.iv);
       const tagB64 = bytesToBase64(split.tag);
+      // Digital signature over the encrypted payload (proves authenticity)
+      const signature = await signData(envelope.payload);
       console.log('[chat] envelope ready', { seq, nonce: envelope.nonce, ctLen: split.ciphertext.length });
 
       // Step 1: Save encrypted message to backend (permanent storage)
@@ -177,6 +292,7 @@ export const useChatStore = create((set, get) => ({
         seq: envelope.seq,
         nonce: envelope.nonce,
         timestamp: envelope.timestamp,
+        signature,
         messageType: messageData.messageType || 'text',
         // store full envelope for future compatibility
         envelope,
@@ -196,9 +312,15 @@ export const useChatStore = create((set, get) => ({
         nonce: envelope.nonce,
         timestamp: envelope.timestamp,
         seq: envelope.seq,
+        signature,
         messageType: messageData.messageType || 'text',
         messageId: savedMessage?._id,
       });
+
+      // Cache our own plaintext so our sent messages survive a session re-key
+      if (savedMessage?._id) {
+        cachePlaintext(savedMessage._id, messageData.plaintext || messageData.text || '');
+      }
 
       // Step 3: Add to local messages (with actual DB data)
       const newMessage = {
@@ -213,11 +335,15 @@ export const useChatStore = create((set, get) => ({
         delivered: !!savedMessage,
         read: false,
         isEncrypted: true,
+        verified: true, // our own message
       };
 
       set((state) => ({
         messages: [...state.messages, newMessage],
       }));
+
+      // Update the sidebar conversation list with this new message
+      get().fetchConversations();
 
       return savedMessage;
     } catch (error) {
@@ -271,9 +397,37 @@ export const useChatStore = create((set, get) => ({
   },
 
   receiveMessage: (message) => {
-    set((state) => ({
-      messages: [...state.messages, message],
-    }));
+    const { selectedUser } = get();
+    const authUser = useAuthStore.getState().user;
+    const mine = message.senderId === authUser?.id;
+    const isForOpenChat =
+      !!selectedUser &&
+      (message.senderId === selectedUser.id ||
+        (mine && message.recipientId === selectedUser.id));
+
+    if (isForOpenChat) {
+      set((state) => ({ messages: [...state.messages, message] }));
+
+      // If it's an incoming message in the open chat, immediately mark it read
+      if (!mine && message.id) {
+        const socket = useSocketStore.getState().socket;
+        if (socket?.connected) {
+          socket.emit('message:read', { messageId: message.id, senderId: message.senderId });
+        }
+      }
+    } else if (!mine) {
+      // Incoming message for a different conversation -> bump unread badge
+      set((state) => ({
+        conversations: state.conversations.map((c) =>
+          c.partner.id === message.senderId
+            ? { ...c, unreadCount: (c.unreadCount || 0) + 1 }
+            : c
+        ),
+      }));
+    }
+
+    // Refresh the sidebar conversation list (last message + ordering)
+    get().fetchConversations();
   },
 
   receiveFileChunk: (chunk) => {
@@ -306,15 +460,11 @@ export const useChatStore = create((set, get) => ({
 
   setTypingUser: (userId, isTyping) => {
     set((state) => {
-      if (isTyping) {
-        return {
-          typingUsers: [...state.typingUsers, userId],
-        };
-      } else {
-        return {
-          typingUsers: state.typingUsers.filter((id) => id !== userId),
-        };
-      }
+      const without = state.typingUsers.filter((id) => id !== userId);
+      return {
+        // dedupe: only one entry per user, present only while typing
+        typingUsers: isTyping ? [...without, userId] : without,
+      };
     });
   },
 

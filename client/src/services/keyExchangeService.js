@@ -129,6 +129,51 @@ export async function getIdentityPublicB64() {
   return identity.pubB64;
 }
 
+// Remember a peer's identity public key (seen during key exchange) so we can
+// compute a verifiable safety number / fingerprint for MITM detection.
+export async function rememberPeerIdentity(userId, pubB64) {
+  if (!userId || !pubB64) return;
+  try {
+    await putValue('identity', { id: `peer:${userId}`, pub: pubB64 });
+  } catch (e) {
+    console.warn('Failed to store peer identity', e);
+  }
+}
+
+export async function getPeerIdentity(userId) {
+  if (!userId) return null;
+  const rec = await getValue('identity', `peer:${userId}`);
+  return rec?.pub || null;
+}
+
+// Sign an arbitrary string with our identity private key (ECDSA P-256 / SHA-256).
+// Used to prove message authenticity (digital signature).
+export async function signData(str) {
+  const identity = await ensureIdentityKeys();
+  const data = utf8ToBytes(str);
+  const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, identity.privateKey, data);
+  return arrayBufferToBase64(sig);
+}
+
+// Verify a string's signature against a sender's identity public key.
+export async function verifyData(str, sigB64, senderPubB64) {
+  if (!sigB64 || !senderPubB64) return false;
+  try {
+    const key = await crypto.subtle.importKey(
+      'spki',
+      base64ToArrayBuffer(senderPubB64),
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['verify'],
+    );
+    const data = utf8ToBytes(str);
+    return await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, base64ToArrayBuffer(sigB64), data);
+  } catch (e) {
+    console.warn('verifyData failed', e);
+    return false;
+  }
+}
+
 async function signPayload(payload) {
   const identity = await ensureIdentityKeys();
   const data = utf8ToBytes(JSON.stringify(payload));
@@ -191,9 +236,13 @@ async function cacheSession(userId, sessionKey, username) {
   const raw = sessionKey instanceof Uint8Array
     ? sessionKey
     : new Uint8Array(await crypto.subtle.exportKey('raw', sessionKey));
-  await persistSession(userId, raw, 0, username);
+  // Preserve any existing sequence counter so re-running a key exchange does NOT
+  // reset seq to 0 and collide with messages already stored on the server.
+  const prior = await getValue('sessions', userId);
+  const seqToKeep = prior?.seq || 0;
+  await persistSession(userId, raw, seqToKeep, username);
   const cryptoKey = await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
-  sessionCache.set(userId, { key: cryptoKey, keyBytes: raw, seq: 0, username });
+  sessionCache.set(userId, { key: cryptoKey, keyBytes: raw, seq: seqToKeep, username });
   console.log('[keyx] session key cached for', username || userId);
   // Reset replay tracking for this peer when a new session key is established
   try {
@@ -220,6 +269,7 @@ async function handleKeInit(payload, meta) {
     return;
   }
   await rememberIncomingNonce(payload.nonce);
+  if (payload.identityKey) rememberPeerIdentity(payload.from || meta.senderId, payload.identityKey);
   logEvent('ke_init_received', { from: payload.from || meta.senderId, nonce: payload.nonce, ts, mode: payload.mode || 'signed' });
 
   const insecure = payload.mode === 'insecure' || payload.type === 'KE_INIT_INSECURE';
@@ -297,6 +347,7 @@ async function handleKeReply(payload, meta) {
     return;
   }
   await rememberIncomingNonce(payload.nonce);
+  if (payload.identityKey) rememberPeerIdentity(userId, payload.identityKey);
 
   const insecure = payload.mode === 'insecure' || payload.type === 'KE_REPLY_INSECURE' || existing.insecure;
   if (!insecure && meta.signature) {
@@ -445,6 +496,23 @@ export async function getSessionKey(userId) {
   return session?.keyBytes || null;
 }
 
+/**
+ * Ensure the per-peer sequence counter is at least `minSeq`. Called after loading
+ * conversation history so the next outgoing seq is always above anything the server
+ * already has for this pair (prevents false "duplicate seq / replay" rejections).
+ */
+export async function ensureSeqFloor(userId, minSeq) {
+  if (!Number.isFinite(minSeq) || minSeq <= 0) return;
+  const session = sessionCache.get(userId) || (await loadSession(userId));
+  if (!session) return;
+  if ((session.seq || 0) < minSeq) {
+    session.seq = minSeq;
+    sessionCache.set(userId, session);
+    const raw = session.keyBytes || new Uint8Array(await crypto.subtle.exportKey('raw', session.key));
+    await persistSession(userId, raw, minSeq, session.username);
+  }
+}
+
 export async function nextSessionSeq(userId) {
   const cached = sessionCache.get(userId) || (await loadSession(userId));
   if (!cached) return 0;
@@ -486,7 +554,12 @@ export const keyExchangeService = {
   startInsecureKeyExchange,
   getSessionKey,
   nextSessionSeq,
+  ensureSeqFloor,
   getIdentityPublicB64,
+  getPeerIdentity,
+  rememberPeerIdentity,
+  signData,
+  verifyData,
   waitForSessionKey,
 };
 

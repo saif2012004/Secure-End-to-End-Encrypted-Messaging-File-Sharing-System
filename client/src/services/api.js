@@ -85,6 +85,33 @@ export const messagesAPI = {
     api.delete(`/messages/${messageId}`),
 };
 
+// Groups API
+export const groupsAPI = {
+  createGroup: (name, memberIds) =>
+    api.post('/groups', { name, memberIds }),
+
+  getMyGroups: () =>
+    api.get('/groups'),
+
+  getGroupMessages: (groupId, limit = 50, skip = 0) =>
+    api.get(`/groups/${groupId}/messages`, { params: { limit, skip } }),
+
+  sendGroupMessage: (groupId, copies, messageType = 'text') =>
+    api.post(`/groups/${groupId}/messages`, { copies, messageType }),
+
+  renameGroup: (groupId, name) =>
+    api.patch(`/groups/${groupId}`, { name }),
+
+  addMembers: (groupId, memberIds) =>
+    api.post(`/groups/${groupId}/members`, { memberIds }),
+
+  removeMember: (groupId, memberId) =>
+    api.delete(`/groups/${groupId}/members/${memberId}`),
+
+  leaveGroup: (groupId) =>
+    api.post(`/groups/${groupId}/leave`),
+};
+
 // Files API
 export const filesAPI = {
   uploadChunk: (chunkData) =>

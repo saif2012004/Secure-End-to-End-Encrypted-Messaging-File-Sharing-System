@@ -1,74 +1,124 @@
 # 🔒 Secure End-to-End Encrypted Messaging & File Sharing System
 
-Ibraheem
-A complete, production-ready full-stack secure messaging application built with Node.js, React, MongoDB, and Socket.io for an Information Security course project.
+A full-stack, **end-to-end encrypted** messaging and file-sharing application built with Node.js, React, MongoDB, and Socket.io for an Information Security course project. The server is a **zero-knowledge relay** — it never sees plaintext, keys, or decrypted content.
 
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 [![React](https://img.shields.io/badge/React-18+-blue.svg)](https://reactjs.org/)
-[![MongoDB](https://img.shields.io/badge/MongoDB-Atlas-green.svg)](https://www.mongodb.com/cloud/atlas)
+[![MongoDB](https://img.shields.io/badge/MongoDB-6+-green.svg)](https://www.mongodb.com/)
 [![Socket.io](https://img.shields.io/badge/Socket.io-4.6+-black.svg)](https://socket.io/)
+[![Crypto](https://img.shields.io/badge/Crypto-AES--GCM%20%2B%20ECDH-purple.svg)](#-cryptography--security)
 
 ---
 
-## 🎯 Project Overview
+## 🎯 Overview
 
-This is a **complete full-stack secure messaging system** featuring:
+A complete secure messenger where **all cryptography runs client-side** in the browser using the Web Crypto API. The backend only stores and relays opaque ciphertext.
 
-- ✅ **Backend**: Node.js + Express + MongoDB + Socket.io (relay server)
-- ✅ **Frontend**: React + Vite + Zustand (modern UI)
-- ✅ **Real-time Communication**: Socket.io for instant messaging
-- ✅ **Database**: MongoDB Atlas (cloud-hosted)
-- ✅ **Security**: OWASP-compliant, zero-knowledge architecture
-- ✅ **Encryption**: Placeholder (Base64) - ready for real AES-GCM implementation
+- **Backend** — Node.js + Express + MongoDB + Socket.io (relay + metadata store)
+- **Frontend** — React 18 + Vite + Zustand, with a modern animated UI (Framer Motion)
+- **Real-time** — Socket.io for instant delivery, presence, typing, and group sync
+- **Crypto** — AES-256-GCM, ECDH key exchange, a per-message KDF ratchet, and ECDSA signatures — all in the browser
 
 ---
 
-## 🚀 Quick Start (5 Minutes)
+## ✨ Features
 
-**Follow the comprehensive setup guide:**
+### Messaging
+- 💬 **1-on-1 end-to-end encrypted chat** with real-time delivery
+- 👥 **Group chat** — E2E encrypted via pairwise fan-out (each member's copy encrypted with their own session key; server stays zero-knowledge)
+- ⚙️ **Group management** — create, rename, add/remove members, leave (with ownership transfer & auto-delete when empty), all synced live
+- 📎 **Encrypted file sharing** — chunked upload, relay, reassembly, and auto-download
+- ✍️ **Typing indicators** — live bouncing-dots indicator
+- ✅ **Read receipts** — sent (🕐) → delivered (✓) → read (✓✓)
+- 🟢 **Online/offline presence** — live status dots
+- 🗂️ **Persistent conversation list** with unread badges
+- 🕘 **Persistent message history** — a local decrypted-message cache keeps history readable across reloads and key rotation
 
-📖 **[⚡_SETUP_AND_RUN.md](⚡_SETUP_AND_RUN.md)** ← Start here!
+### Security & Cryptography
+- 🔐 **AES-256-GCM** authenticated encryption (Web Crypto API)
+- 🤝 **ECDH (P-256) key exchange** — signed handshake + key-confirmation MAC
+- 🔁 **Per-message KDF ratchet** — every message encrypted under a unique key derived from the session key + sequence number (versioned `v2` envelopes)
+- 🖊️ **ECDSA (P-256) digital signatures** on every message → a **🛡️ verified-sender badge**
+- 🧭 **Safety-number / fingerprint verification** — compare a number out-of-band to detect man-in-the-middle attacks
+- 🛡️ **Replay protection** — random nonces + monotonic sequence numbers, with server-enforced `(sender, recipient, seq)` uniqueness
+- 🕵️ **Zero-knowledge server** — only ciphertext/IV/tag/metadata stored; never plaintext or keys
+- 🔑 **Auth hardening** — JWT auth, bcrypt password hashing, rate limiting, Helmet, CORS, and a security audit log
 
-### TL;DR
-```bash
-# 1. Create .env file (see ⚡_SETUP_AND_RUN.md Step 1)
-
-# 2. Install dependencies
-npm install
-cd client && npm install
-
-# 3. Setup MongoDB Atlas (free, no installation)
-#    Follow Step 4 in ⚡_SETUP_AND_RUN.md
-
-# 4. Start backend
-npm run dev
-
-# 5. Start frontend (new terminal)
-cd client && npm run dev
-
-# 6. Open http://localhost:3000 and enjoy! 🎉
-```
+### UI
+- 🎨 Modern **dark glassmorphism** theme with gradient accents
+- ⚡ **Framer Motion** animations — page transitions, message enter/exit, list reordering, gesture feedback
+- 📱 Responsive layout
 
 ---
 
-## 🏗️ Architecture
-
-### Zero-Knowledge Design
+## 🏗️ Architecture (Zero-Knowledge)
 
 ```
 ┌──────────────┐         ┌──────────────┐         ┌──────────────┐
 │   Client A   │         │   Backend    │         │   Client B   │
-│   (React)    │         │   (Node.js)  │         │   (React)    │
+│   (React)    │         │  (Node.js)   │         │   (React)    │
 ├──────────────┤         ├──────────────┤         ├──────────────┤
-│ Encrypt      │────────>│              │         │              │
-│ (AES-GCM)    │ HTTPS   │ Store        │         │              │
-│              │         │ Metadata     │ Socket  │ Decrypt      │
-│ Decrypt      │<────────│ Relay        │<────────│ (AES-GCM)    │
-│              │         │ Ciphertext   │         │              │
+│ ECDH + sign  │────────▶│  Store only  │         │              │
+│ AES-GCM enc  │  HTTPS  │  ciphertext  │ Socket  │ Verify sig   │
+│              │         │  + metadata  │────────▶│ AES-GCM dec  │
+│ Verify sig   │◀────────│  Relay msgs  │         │              │
+│ AES-GCM dec  │         │  (no keys)   │         │              │
 └──────────────┘         └──────────────┘         └──────────────┘
 ```
 
-**Key Principle**: The server **never** sees plaintext. All encryption happens client-side.
+**Key principle:** the server **never** decrypts. Key exchange, encryption, signing, and verification all happen in the browser.
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Node.js 18+
+- A MongoDB instance — either **MongoDB Atlas** (free cloud) or a local one via Docker
+
+### 1. Clone & install
+```bash
+git clone https://github.com/saif2012004/Secure-End-to-End-Encrypted-Messaging-File-Sharing-System.git
+cd Secure-End-to-End-Encrypted-Messaging-File-Sharing-System
+
+npm install          # backend deps
+cd client && npm install && cd ..   # frontend deps
+```
+
+### 2. Start MongoDB (pick one)
+```bash
+# Option A — local via Docker (quickest)
+docker run -d --name securechat-mongo -p 27017:27017 mongo:7
+
+# Option B — MongoDB Atlas (free cloud): create a cluster and grab the connection string.
+# See ⚡_SETUP_AND_RUN.md for the step-by-step.
+```
+
+### 3. Create a `.env` in the project root
+```env
+PORT=5000
+NODE_ENV=development
+MONGODB_URI=mongodb://localhost:27017/infosec_project   # or your Atlas URI
+JWT_SECRET=replace_with_a_long_random_string
+JWT_EXPIRE=7d
+CORS_ORIGIN=http://localhost:3000
+SOCKET_CORS_ORIGIN=http://localhost:3000
+RATE_LIMIT_WINDOW_MS=900000
+RATE_LIMIT_MAX=100
+```
+
+### 4. Run
+```bash
+# Terminal 1 — backend
+npm run dev          # or: npm start
+
+# Terminal 2 — frontend
+cd client && npm run dev
+```
+
+Open **http://localhost:3000**, register two users (in two browsers / a normal + incognito window), and start chatting. 🎉
+
+> 📖 For a detailed walkthrough see **[⚡_SETUP_AND_RUN.md](⚡_SETUP_AND_RUN.md)**.
 
 ---
 
@@ -77,392 +127,116 @@ cd client && npm run dev
 ```
 Secure-Messaging-System/
 │
-├── 📦 Backend (server/)
-│   ├── config/                   # Configuration files
-│   ├── controllers/              # Business logic (auth, messages, files)
-│   ├── routes/                   # API endpoints (19 routes)
-│   ├── models/                   # Database schemas (User, Message, FileChunk, Log)
-│   ├── middlewares/              # Auth, validation, logging, security
-│   ├── sockets/                  # Socket.io server (25+ events)
-│   ├── utils/                    # Logger, JWT, validation
-│   └── server.js                 # Main entry point
+├── server/                         # Backend (Node.js + Express + Socket.io)
+│   ├── config/                     # DB, CORS, rate limiting
+│   ├── controllers/                # auth, message, file, group logic
+│   ├── routes/                     # REST endpoints (auth, messages, files, groups)
+│   ├── models/                     # User, Message, Group, FileChunk, Log
+│   ├── middlewares/                # auth, validation, logging, security
+│   ├── sockets/                    # Socket.io relay (messages, presence, typing, groups)
+│   ├── utils/                      # logger, JWT, validation
+│   └── server.js                   # entry point
 │
-├── 🎨 Frontend (client/)
+├── client/                         # Frontend (React + Vite)
 │   └── src/
-│       ├── pages/                # Login, Register, Chat
-│       ├── components/           # MessageList, MessageInput, FileUpload, UserSidebar
-│       ├── store/                # State management (Zustand)
-│       ├── services/             # API integration (Axios)
-│       ├── utils/                # Crypto functions (placeholder)
-│       └── styles/               # CSS files
+│       ├── pages/                  # Login, Register, Chat
+│       ├── components/             # MessageList, MessageInput, UserSidebar, TypingIndicator,
+│       │                           #   FileUpload, CreateGroupModal, GroupManageModal, SafetyNumberModal
+│       ├── crypto/                 # aesGcm, messageFormat, fileEncryption, random, constants
+│       ├── services/               # encryptionService, keyExchangeService, safetyNumber,
+│       │                           #   messageCache, fileService, api
+│       ├── store/                  # Zustand stores: auth, chat, group, socket
+│       ├── animations/             # Framer Motion variants
+│       └── styles/                 # CSS (dark glass theme)
 │
-├── 📚 Documentation/
-│   ├── ⚡_SETUP_AND_RUN.md      # ⭐ MAIN SETUP GUIDE
-│   ├── API_EXAMPLES.md          # API testing with curl
-│   ├── INTEGRATION_GUIDE.md     # Backend ↔ Frontend integration
-│   ├── TESTING_GUIDE.md         # 12 test scenarios
-│   ├── WEBSOCKET_IMPLEMENTATION.md  # Socket.io events
-│   ├── LOGGING_IMPLEMENTATION.md    # Security logging
-│   └── QUICK_REFERENCE.md       # Daily commands
-│
-├── .env                          # Environment variables (you create this)
-├── .gitignore                    # Git ignore rules
-├── package.json                  # Backend dependencies
-└── README.md                     # This file
+├── ⚡_SETUP_AND_RUN.md             # detailed setup guide
+├── API_EXAMPLES.md / TESTING_GUIDE.md / ...   # supporting docs
+├── .gitignore                      # ignores .env, node_modules, dist, logs
+├── package.json                    # backend
+└── README.md
 ```
 
 ---
 
-## ✨ Features
+## 🔐 Cryptography & Security
 
-### Backend Features ✅
-- **Authentication**: JWT + bcrypt password hashing (OWASP-compliant)
-- **API Endpoints**: 19 RESTful endpoints (auth, messages, files, health)
-- **Real-time**: Socket.io with 25+ events (message relay, user presence, typing)
-- **Database**: MongoDB Atlas with 4 schemas (User, Message, FileChunk, Log)
-- **Security**: Rate limiting, input validation, Helmet, CORS, security logging
-- **Logging**: 46 security event types, OWASP-compliant audit trail
-- **File Handling**: Chunked upload/download for large files
-- **Replay Protection**: Sequence numbers to prevent replay attacks
+| Layer | Mechanism |
+|---|---|
+| **Confidentiality** | AES-256-GCM (Web Crypto), unique random IV per message |
+| **Key agreement** | ECDH P-256, HKDF-derived session key, signed handshake + key-confirmation MAC |
+| **Forward-ish secrecy** | Per-message KDF ratchet — `messageKey = HKDF(sessionKey, seq)` (versioned `v2` envelopes) |
+| **Authenticity** | ECDSA P-256 signatures over each ciphertext → verified-sender badge |
+| **MITM detection** | Safety number derived from both identity public keys (compare out-of-band) |
+| **Replay protection** | Random nonces + monotonic seq; server enforces unique `(sender, recipient, seq)` |
+| **At rest (server)** | Only ciphertext, IV, tag, and metadata — never plaintext or keys |
+| **Auth** | JWT + bcrypt; rate limiting, Helmet, CORS; security audit logging |
 
-### Frontend Features ✅
-- **Modern UI**: React 18 + Vite with beautiful gradient design
-- **Pages**: Login, Register, Chat
-- **Components**: MessageList, MessageInput, FileUpload, UserSidebar
-- **State Management**: Zustand stores (auth, chat, socket)
-- **Real-time**: Socket.io client for instant messaging
-- **Responsive**: Mobile-friendly design
-- **Loading States**: Spinners, error handling, connection status
-
-### Integration ✅
-- **Full-Stack**: Backend and frontend fully connected
-- **Message Persistence**: Save to database + relay via Socket.io
-- **User Presence**: Real-time online/offline tracking
-- **Message History**: Load previous messages from database
-- **File Sharing**: Upload encrypted files in chunks
+> **Note:** the per-message ratchet provides key separation per message (not a full Double-Ratchet, since the root session key persists for usability). History is kept readable via a local decrypted-message cache on each device.
 
 ---
 
-## 🔐 Security Features
+## 📡 REST API (overview)
 
-### OWASP-Compliant
-- ✅ Password storage with bcrypt (work factor 12)
-- ✅ JWT authentication with secure tokens
-- ✅ Rate limiting (brute-force protection)
-- ✅ Input validation on all endpoints
-- ✅ Security headers with Helmet
-- ✅ CORS protection
-- ✅ Comprehensive security logging
+**Auth** — `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`, `PUT /api/auth/public-key`, `GET /api/auth/user/:id`, `GET /api/auth/users/search`
 
-### Zero-Knowledge Architecture
-- ✅ Server stores **only encrypted data** (ciphertext, IV, tag)
-- ✅ Server **never decrypts** messages
-- ✅ Server **never stores** plaintext or encryption keys
-- ✅ All crypto operations performed **client-side**
+**Messages** — `POST /api/messages/send`, `GET /api/messages/conversations`, `GET /api/messages/conversation/:userId`, `PATCH /api/messages/:id/delivered`, `PATCH /api/messages/:id/read`, `DELETE /api/messages/:id`
 
-### Attack Prevention
-- ✅ Replay attack detection (sequence numbers)
-- ✅ SQL injection prevention (Mongoose ODM)
-- ✅ XSS protection (input sanitization)
-- ✅ Path traversal detection
-- ✅ Brute-force detection and blocking
-- ✅ Abnormal request pattern detection
+**Groups** — `POST /api/groups`, `GET /api/groups`, `GET /api/groups/:id/messages`, `POST /api/groups/:id/messages`, `PATCH /api/groups/:id` (rename), `POST /api/groups/:id/members` (add), `DELETE /api/groups/:id/members/:memberId` (remove), `POST /api/groups/:id/leave`
+
+**Files** — `POST /api/files/upload-chunk`, `GET /api/files/download/:id`, `GET /api/files/progress/:id`, `DELETE /api/files/:id`
+
+**Health** — `GET /health`, `GET /`
 
 ---
 
-## 📡 API Overview
+## 🔌 Socket.io Events (overview)
 
-### Authentication (7 endpoints)
-- `POST /api/auth/register` - Register new user
-- `POST /api/auth/login` - Login user
-- `POST /api/auth/logout` - Logout user
-- `GET /api/auth/me` - Get current user
-- `PUT /api/auth/public-key` - Update public key
-- `GET /api/auth/user/:userId` - Get user by ID
-- `GET /api/auth/users/search` - Search users
+**Client → Server:** `join_room`, `leave_room`, `send_message`, `send_file_chunk`, `request_file`, `key-exchange:send`, `typing:start`, `typing:stop`, `message:delivered`, `message:read`
 
-### Messages (6 endpoints)
-- `POST /api/messages/send` - Send encrypted message
-- `GET /api/messages/conversations` - Get all conversations
-- `GET /api/messages/conversation/:userId` - Get conversation
-- `PATCH /api/messages/:messageId/delivered` - Mark delivered
-- `PATCH /api/messages/:messageId/read` - Mark read
-- `DELETE /api/messages/:messageId` - Delete message
-
-### Files (4 endpoints)
-- `POST /api/files/upload-chunk` - Upload encrypted file chunk
-- `GET /api/files/download/:messageId` - Download file
-- `GET /api/files/progress/:messageId` - Get upload progress
-- `DELETE /api/files/:messageId` - Delete file
-
-### Health (2 endpoints)
-- `GET /health` - Server health check
-- `GET /` - API information
-
-**Total: 19 API endpoints**
+**Server → Client:** `receive_message`, `receive_file_chunk`, `key-exchange:receive`, `user:online`, `user:offline`, `typing:user`, `message:delivery-confirmed`, `message:read-confirmed`, `group:created`, `group:updated`, `group:removed`, `group_message`, plus connection/error events
 
 ---
 
-## 🔌 Socket.io Events
+## 🗄️ Data Models (metadata only — no plaintext)
 
-### Client → Server (10 events)
-- `join_room` - Join 1-1 chat room
-- `leave_room` - Leave chat room
-- `send_message` - Send encrypted message
-- `send_file_chunk` - Send encrypted file chunk
-- `request_file` - Request file download
-- `key-exchange:send` - Send public key
-- `typing:start` - Start typing indicator
-- `typing:stop` - Stop typing indicator
-- `message:delivered` - Confirm delivery
-- `message:read` - Confirm read
-
-### Server → Client (15 events)
-- `connect` - Socket connected
-- `disconnect` - Socket disconnected
-- `room:joined` - Room joined successfully
-- `receive_message` - Receive encrypted message
-- `receive_file_chunk` - Receive file chunk
-- `message:sent` - Message relay confirmed
-- `user:online` - User came online
-- `user:offline` - User went offline
-- `typing:user` - User typing status
-- `message:delivery-confirmed` - Delivery confirmed
-- `message:read-confirmed` - Read confirmed
-- Plus error events
-
-**Total: 25+ Socket.io events**
-
----
-
-## 🗄️ Database Models
-
-### User
-```javascript
-{
-  username: String,
-  email: String,
-  password: String (bcrypt hashed),
-  publicKey: String,
-  isOnline: Boolean,
-  socketId: String,
-  lastSeen: Date
-}
-```
-
-### Message (Metadata Only)
-```javascript
-{
-  sender: ObjectId,
-  recipient: ObjectId,
-  ciphertext: String (Base64),
-  iv: String (Base64),
-  tag: String (Base64),
-  seq: Number,
-  messageType: String,
-  delivered: Boolean,
-  read: Boolean
-}
-```
-
-### FileChunk
-```javascript
-{
-  messageId: ObjectId,
-  chunkNumber: Number,
-  totalChunks: Number,
-  encryptedData: String,
-  iv: String,
-  tag: String,
-  hash: String
-}
-```
-
-### Log (Security Events)
-```javascript
-{
-  eventType: String (46 types),
-  level: String,
-  user: ObjectId,
-  ipAddress: String,
-  success: Boolean,
-  details: Object
-}
-```
-
----
-
-## 🧪 Testing
-
-### Quick Test Flow
-
-1. **Start servers** (see ⚡_SETUP_AND_RUN.md)
-2. **Register User A** (`alice@example.com`)
-3. **Register User B** in incognito (`bob@example.com`)
-4. **User B**: Search for "alice", click her name
-5. **User B**: Send message: "Hello Alice!"
-6. **User A**: See message appear instantly! 🎉
-
-### Test Scenarios
-
-See **[TESTING_GUIDE.md](TESTING_GUIDE.md)** for 12 comprehensive test scenarios including:
-- Registration & authentication
-- Message sending & receiving
-- Message persistence
-- File uploads
-- Security logging
-- Replay attack detection
-- Rate limiting
-
----
-
-## 📚 Documentation
-
-| File | Purpose |
-|------|---------|
-| **⚡_SETUP_AND_RUN.md** | ⭐ Main setup guide (start here!) |
-| **API_EXAMPLES.md** | Test all 19 APIs with curl |
-| **INTEGRATION_GUIDE.md** | How backend ↔ frontend connect |
-| **TESTING_GUIDE.md** | 12 complete test scenarios |
-| **WEBSOCKET_IMPLEMENTATION.md** | All Socket.io events explained |
-| **LOGGING_IMPLEMENTATION.md** | Security logging details |
-| **QUICK_REFERENCE.md** | Daily development commands |
-
----
-
-## ⚠️ Important Notes
-
-### Encryption Status
-
-**Current**: Messages use **Base64 encoding** (placeholder - **NOT SECURE!**)
-
-**For Production**: Implement real encryption in `client/src/utils/crypto.js`:
-- AES-GCM for message encryption
-- ECDH for key exchange
-- RSA for digital signatures
-
-**Backend is ready** - it will work seamlessly with real encryption!
-
-### Database
-
-Using **MongoDB Atlas** (cloud) - no local installation needed!
-- Free tier (M0) - 512MB storage
-- Always online
-- Easy to use web dashboard
-
-### Environment Variables
-
-**Never commit `.env` to Git!** It contains sensitive information:
-- MongoDB connection string
-- JWT secret
-- API keys
+- **User** — username, email, bcrypt password hash, online status, lastSeen
+- **Message** — sender, recipient, optional `group`, ciphertext / iv / tag / payload, `seq`, `nonce`, `signature`, `v` (crypto version), delivered/read flags
+- **Group** — name, owner, members[], avatar color
+- **FileChunk** — messageId, chunk index, encrypted data, iv, tag
+- **Log** — security event type, level, user, IP, success, details
 
 ---
 
 ## 🛠️ Tech Stack
 
-### Backend
-- **Runtime**: Node.js 18+
-- **Framework**: Express.js
-- **Database**: MongoDB + Mongoose
-- **Real-time**: Socket.io
-- **Authentication**: JWT + bcrypt
-- **Logging**: Winston
-- **Validation**: Joi + express-validator
-- **Security**: Helmet, CORS, rate-limit
+**Backend:** Node.js, Express, MongoDB + Mongoose, Socket.io, JWT, bcrypt, Winston, Helmet, express-rate-limit, express-validator
 
-### Frontend
-- **Library**: React 18
-- **Build Tool**: Vite
-- **State**: Zustand
-- **HTTP Client**: Axios
-- **Real-time**: Socket.io-client
-- **Routing**: React Router
-- **Styling**: CSS3 with gradients
+**Frontend:** React 18, Vite, Zustand, Axios, socket.io-client, React Router, Framer Motion, Web Crypto API
 
 ---
 
-## 📊 Project Statistics
+## 🧪 Testing
 
-- **Total Files**: 68+
-- **Lines of Code**: 15,700+
-- **Backend Files**: 25
-- **Frontend Files**: 26
-- **Documentation**: 8 files
-- **API Endpoints**: 19
-- **Socket Events**: 25+
-- **Security Features**: 20+
-- **Log Event Types**: 46
+1. Start the backend and frontend.
+2. Register **alice** and **bob** in two separate browser sessions.
+3. Search for the other user, open the chat, and send a message — it appears instantly and decrypts on the other side.
+4. Try the security features: open **🛡️ Verify** to compare safety numbers, watch the **✓✓** read receipts, the **🛡️ verified-sender** badge, typing indicators, and create a **group** to message multiple people.
+
+See **[TESTING_GUIDE.md](TESTING_GUIDE.md)** for more scenarios.
 
 ---
 
-## 👥 Team
+## ⚠️ Notes
 
-- **Member 3**: Full-stack implementation (Backend + Frontend + Integration)
-- **Members 1 & 2**: Cryptographic implementation (AES-GCM, ECDH, RSA)
-
----
-
-## 🎓 Course Information
-
-**Course**: Information Security  
-**Project**: Secure End-to-End Encrypted Messaging System  
-**Institution**: [Your Institution]  
-**Semester**: 7th Semester
+- **Never commit `.env`** — it's gitignored. It holds your MongoDB URI and JWT secret.
+- This is an **educational project**. The crypto demonstrates real, working primitives (AES-GCM, ECDH, ECDSA, HKDF ratchet) but has not undergone a formal security audit.
 
 ---
 
-## 📝 License
+## 🎓 Course
 
-This is an educational project for an Information Security course.
-
----
-
-## 🙏 Acknowledgments
-
-- MongoDB Atlas for free cloud database
-- Socket.io for real-time communication
-- OWASP for security guidelines
-- React community for excellent documentation
+**Course:** Information Security · **Project:** Secure End-to-End Encrypted Messaging System
 
 ---
 
-## 📞 Support
-
-For issues, questions, or contributions:
-- Create an issue on GitHub
-- Check the documentation files
-- See **[⚡_SETUP_AND_RUN.md](⚡_SETUP_AND_RUN.md)** for troubleshooting
-
----
-
-## 🎉 Status
-
-```
-╔═══════════════════════════════════════════════════════╗
-║                                                       ║
-║         ✅ PROJECT STATUS: COMPLETE                  ║
-║                                                       ║
-║  Backend Implementation:     ✅ 100% Complete       ║
-║  Frontend Implementation:    ✅ 100% Complete       ║
-║  Backend ↔ Frontend:         ✅ Fully Integrated    ║
-║  Real-time Messaging:        ✅ Working            ║
-║  Database Persistence:       ✅ Working            ║
-║  Security Logging:           ✅ Working            ║
-║  Documentation:              ✅ Comprehensive      ║
-║                                                       ║
-║  Encryption:                 ⚠️  Placeholder        ║
-║  (Ready for AES-GCM implementation)                  ║
-║                                                       ║
-╚═══════════════════════════════════════════════════════╝
-```
-
----
-
-**Built with ❤️ for Information Security Course**
-
-**Get Started**: [⚡_SETUP_AND_RUN.md](⚡_SETUP_AND_RUN.md)
-
----
-
-**Last Updated**: December 2024
+**Built with ❤️ for an Information Security course.** Get started → **[⚡_SETUP_AND_RUN.md](⚡_SETUP_AND_RUN.md)**

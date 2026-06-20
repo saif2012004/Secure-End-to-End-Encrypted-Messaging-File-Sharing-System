@@ -2,6 +2,10 @@
 // This file focuses on shaping/parsing the JSON envelope and simple validation helpers.
 
 export const ENVELOPE_VERSION = 1;
+// v1 = encrypt directly with the session key.
+// v2 = encrypt with a per-message key derived from the session key + seq (KDF ratchet).
+export const SUPPORTED_VERSIONS = [1, 2];
+export const RATCHET_VERSION = 2;
 
 // 60-second leeway for clock skew. This is our freshness guard.
 export function isMessageFresh(timestampMs) {
@@ -67,7 +71,7 @@ export function validateEnvelopeShape(env) {
     errors.push('Envelope must be an object');
     return errors;
   }
-  if (env.v !== ENVELOPE_VERSION) errors.push('Unsupported envelope version');
+  if (!SUPPORTED_VERSIONS.includes(env.v)) errors.push('Unsupported envelope version');
   if (!env.sender_id) errors.push('Missing sender_id');
   if (!env.recipient_id) errors.push('Missing recipient_id');
   if (!env.nonce) errors.push('Missing nonce');

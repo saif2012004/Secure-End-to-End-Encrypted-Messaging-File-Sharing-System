@@ -1,9 +1,11 @@
 import { useState, useRef } from 'react';
+import { motion } from 'framer-motion';
 import { useSocketStore } from '../store/socketStore';
 import { useAuthStore } from '../store/authStore';
 import { useChatStore } from '../store/chatStore';
 import { uploadEncryptedFile } from '../services/fileService';
 import { keyExchangeService } from '../services/keyExchangeService';
+import { backdropVariant, modalVariant } from '../animations/variants';
 import '../styles/FileUpload.css';
 
 function FileUpload({ recipientId, sessionKeyBytes, onClose }) {
@@ -79,8 +81,22 @@ function FileUpload({ recipientId, sessionKeyBytes, onClose }) {
   };
 
   return (
-    <div className="file-upload-overlay" onClick={onClose}>
-      <div className="file-upload-modal" onClick={(e) => e.stopPropagation()}>
+    <motion.div
+      className="file-upload-overlay"
+      onClick={onClose}
+      variants={backdropVariant}
+      initial="hidden"
+      animate="show"
+      exit="exit"
+    >
+      <motion.div
+        className="file-upload-modal"
+        onClick={(e) => e.stopPropagation()}
+        variants={modalVariant}
+        initial="hidden"
+        animate="show"
+        exit="exit"
+      >
         <div className="modal-header">
           <h3>Upload Encrypted File</h3>
           <button className="btn-close" onClick={onClose}>
@@ -154,8 +170,8 @@ function FileUpload({ recipientId, sessionKeyBytes, onClose }) {
             Files are encrypted before upload
           </p>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }
 

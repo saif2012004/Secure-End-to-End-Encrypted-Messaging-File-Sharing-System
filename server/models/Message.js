@@ -22,6 +22,14 @@ const messageSchema = new mongoose.Schema(
       required: [true, 'Recipient is required'],
       index: true,
     },
+    // Optional group reference. When set, this is one fan-out copy of a group
+    // message (encrypted individually for `recipient`). Server stays zero-knowledge.
+    group: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Group',
+      default: null,
+      index: true,
+    },
     // Encrypted message content (as Base64 string)
     ciphertext: {
       type: String,
@@ -47,6 +55,11 @@ const messageSchema = new mongoose.Schema(
     },
     timestamp: {
       type: Number,
+    },
+    // Envelope/crypto version: 1 = session key, 2 = per-message ratchet key
+    v: {
+      type: Number,
+      default: 1,
     },
     // Sequence number for replay attack prevention
     seq: {

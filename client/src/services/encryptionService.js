@@ -3,8 +3,27 @@
 
 import { encryptMessage, decryptMessage, packPayload, unpackPayload } from '../crypto/aesGcm';
 import { getRandomNonce, getSeqNumber } from '../crypto/random';
-import { buildEnvelope, bytesToBase64, base64ToBytes, isMessageFresh, validateEnvelopeShape } from '../crypto/messageFormat';
+import { buildEnvelope, bytesToBase64, base64ToBytes, isMessageFresh, validateEnvelopeShape, RATCHET_VERSION } from '../crypto/messageFormat';
+import { hkdf } from '../utils/hkdf';
 import { logEvent } from './loggingService';
+
+/**
+ * Derive a unique per-message AES key from the long-lived session key and the
+ * message sequence number (a symmetric KDF ratchet). Each message is encrypted
+ * under its own key, so compromising one message key does not expose the others.
+ * Deterministic in (sessionKey, seq) so both peers derive the same key with no
+ * extra state to synchronise.
+ */
+async function deriveMessageKey(sessionKeyUint8, seq) {
+  const salt = new Uint8Array(8);
+  // little-endian encode seq (supports very large counters)
+  let s = Number(seq) >>> 0;
+  let high = Math.floor(Number(seq) / 0x100000000) >>> 0;
+  salt[0] = s & 0xff; salt[1] = (s >>> 8) & 0xff; salt[2] = (s >>> 16) & 0xff; salt[3] = (s >>> 24) & 0xff;
+  salt[4] = high & 0xff; salt[5] = (high >>> 8) & 0xff; salt[6] = (high >>> 16) & 0xff; salt[7] = (high >>> 24) & 0xff;
+  const okm = await hkdf(sessionKeyUint8, salt, 'securechat-msg-key-v2', 32);
+  return okm instanceof Uint8Array ? okm : new Uint8Array(okm);
+}
 
 const STORE_NAME = 'replay_protection';
 const DB_NAME = 'securechat_replay_db';
@@ -97,7 +116,9 @@ export async function createEncryptedEnvelope(
     const nonce_b64 = bytesToBase64(nonceBytes);
     const seq_num = typeof seqOverride === 'number' ? seqOverride : getSeqNumber();
 
-    const encrypted = await encryptMessage(plainText, sessionKeyUint8);
+    // KDF ratchet: derive a unique key for this message from the session key + seq
+    const msgKey = await deriveMessageKey(sessionKeyUint8, seq_num);
+    const encrypted = await encryptMessage(plainText, msgKey);
     const packed = packPayload(encrypted.ciphertext, encrypted.iv, encrypted.tag);
     const payload_b64 = bytesToBase64(packed); // payload is ciphertext||iv||tag
 
@@ -109,6 +130,7 @@ export async function createEncryptedEnvelope(
       seq: seq_num,
       payload_b64,
     });
+    envelope.v = RATCHET_VERSION; // mark as per-message-key encrypted
 
     return envelope;
   } catch (err) {
@@ -176,7 +198,9 @@ export async function parseAndDecryptEnvelope(envelopeJson, sessionKeyUint8, rep
   try {
     const payloadBytes = base64ToBytes(env.payload);
     const split = unpackPayload(payloadBytes);
-    plaintext = await decryptMessage(split.ciphertext, split.iv, split.tag, sessionKeyUint8);
+    // v2 envelopes use a per-message ratchet key; v1 used the session key directly
+    const useKey = env.v >= RATCHET_VERSION ? await deriveMessageKey(sessionKeyUint8, env.seq) : sessionKeyUint8;
+    plaintext = await decryptMessage(split.ciphertext, split.iv, split.tag, useKey);
   } catch (err) {
     const wrapped = new Error(`Decrypt failed: ${err.message || err}`);
     wrapped.cause = err;
@@ -209,7 +233,8 @@ export async function weakDecryptEnvelope(envelopeJson, sessionKeyUint8) {
     const env = typeof envelopeJson === 'string' ? JSON.parse(envelopeJson) : envelopeJson;
     const payloadBytes = base64ToBytes(env.payload);
     const split = unpackPayload(payloadBytes);
-    return await decryptMessage(split.ciphertext, split.iv, split.tag, sessionKeyUint8);
+    const useKey = env.v >= RATCHET_VERSION ? await deriveMessageKey(sessionKeyUint8, env.seq) : sessionKeyUint8;
+    return await decryptMessage(split.ciphertext, split.iv, split.tag, useKey);
   } catch (err) {
     // messy long line error for the "student wrote this fast" vibe
     throw new Error('weakDecryptEnvelope exploded because something went wrong with JSON or base64 or decrypt: ' + (err && err.message ? err.message : err));

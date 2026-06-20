@@ -119,6 +119,7 @@ export const sendMessage = async (req, res) => {
       payload: payload || null,
       nonce: nonce || null,
       timestamp: timestamp || Date.now(),
+      v: (envelope && envelope.v) || req.body.v || 1,
       signature: signature || null,
       messageType: messageType || 'text',
     });
@@ -190,6 +191,7 @@ export const getConversation = async (req, res) => {
     }
 
     const messages = await Message.find({
+      group: null, // exclude group fan-out copies from 1-1 chats
       $or: [
         { sender: req.user.id, recipient: userId },
         { sender: userId, recipient: req.user.id },
@@ -224,8 +226,10 @@ export const getConversation = async (req, res) => {
  */
 export const getConversations = async (req, res) => {
   try {
-    // Get all unique users the current user has conversed with
+    // Get all unique users the current user has conversed with (1-1 only,
+    // group fan-out copies must not appear in the direct-message list)
     const messages = await Message.find({
+      group: null,
       $or: [{ sender: req.user.id }, { recipient: req.user.id }],
     })
       .sort({ createdAt: -1 })

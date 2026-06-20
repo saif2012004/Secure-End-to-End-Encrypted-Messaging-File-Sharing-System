@@ -5,6 +5,8 @@ import { parseAndDecryptEnvelope, weakDecryptEnvelope } from '../services/encryp
 import { keyExchangeService, waitForSessionKey } from '../services/keyExchangeService';
 import { handleIncomingChunk as handleEncryptedChunk } from '../services/fileService';
 import { useChatStore } from './chatStore';
+import { useGroupStore } from './groupStore';
+import { cachePlaintext } from '../services/messageCache';
 import { logEvent } from '../services/loggingService';
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
@@ -126,6 +128,19 @@ export const useSocketStore = create((set, get) => ({
           return;
         }
 
+        // Verify the sender's digital signature over the payload
+        let verified = false;
+        if (data.signature && (data.payload || envelope.payload)) {
+          const senderPub = await keyExchangeService.getPeerIdentity(senderId);
+          if (senderPub) {
+            verified = await keyExchangeService.verifyData(
+              data.payload || envelope.payload,
+              data.signature,
+              senderPub,
+            );
+          }
+        }
+
         const message = {
           id: data.messageId || `msg_${Date.now()}`,
           senderId: data.senderId,
@@ -137,10 +152,17 @@ export const useSocketStore = create((set, get) => ({
           delivered: false,
           read: false,
           isEncrypted: true,
+          verified,
         };
 
         seenMessages.add(dedupeKey);
+        if (message.id) cachePlaintext(message.id, decrypted); // persistent history
         useChatStore.getState().receiveMessage(message);
+
+        // Tell the sender we received it (delivery receipt -> single check)
+        if (message.id && socket.connected) {
+          socket.emit('message:delivered', { messageId: message.id, senderId });
+        }
         logEvent('message_decrypted', { senderId, seq: envelope.seq, nonce: envelope.nonce });
       } catch (error) {
         console.error('Failed to decrypt message:', error);
@@ -189,18 +211,33 @@ export const useSocketStore = create((set, get) => ({
 
     // User presence
     socket.on('user:online', (data) => {
-      console.log('User online:', data.username);
-      // Update user status in UI
+      useChatStore.getState().setUserPresence(data.userId, true);
     });
 
     socket.on('user:offline', (data) => {
-      console.log('User offline:', data.username);
-      // Update user status in UI
+      useChatStore.getState().setUserPresence(data.userId, false, data.lastSeen);
     });
 
     // Typing indicators
     socket.on('typing:user', (data) => {
       useChatStore.getState().setTypingUser(data.userId, data.isTyping);
+    });
+
+    // Group events
+    socket.on('group:created', (data) => {
+      if (data?.group) useGroupStore.getState().addGroup(data.group);
+    });
+
+    socket.on('group:updated', (data) => {
+      if (data?.group) useGroupStore.getState().updateGroup(data.group);
+    });
+
+    socket.on('group:removed', (data) => {
+      if (data?.groupId) useGroupStore.getState().removeGroupFromList(data.groupId);
+    });
+
+    socket.on('group_message', (data) => {
+      useGroupStore.getState().receiveGroupMessage(data);
     });
 
     // Key exchange

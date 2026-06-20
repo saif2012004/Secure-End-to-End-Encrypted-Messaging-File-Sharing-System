@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
 import { useAuthStore } from '../store/authStore';
 import { authAPI } from '../services/api';
 import '../styles/Auth.css';
@@ -148,9 +149,15 @@ function Register() {
             />
           </div>
 
-          <button type="submit" className="btn-primary" disabled={loading}>
+          <motion.button
+            type="submit"
+            className="btn-primary"
+            disabled={loading}
+            whileHover={!loading ? { y: -2, scale: 1.01 } : {}}
+            whileTap={!loading ? { scale: 0.98 } : {}}
+          >
             {loading ? 'Creating Account...' : 'Register'}
-          </button>
+          </motion.button>
 
           <div className="auth-footer">
             <p>

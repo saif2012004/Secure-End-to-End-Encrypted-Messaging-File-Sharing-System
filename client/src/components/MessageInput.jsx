@@ -1,47 +1,70 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { motion } from 'framer-motion';
 import { useChatStore } from '../store/chatStore';
+import { useGroupStore } from '../store/groupStore';
+import { useSocketStore } from '../store/socketStore';
 import '../styles/MessageInput.css';
 
-function MessageInput({ recipientId }) {
+function MessageInput({ recipientId, group }) {
   const [message, setMessage] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
+  const [sending, setSending] = useState(false);
   const { sendMessage } = useChatStore();
+  const { sendGroupMessage } = useGroupStore();
+  const { sendTypingStart, sendTypingStop } = useSocketStore();
   const typingTimeoutRef = useRef(null);
+  const isTypingRef = useRef(false);
+  const isGroup = !!group;
+
+  const stopTyping = () => {
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
+    if (isTypingRef.current) {
+      isTypingRef.current = false;
+      if (recipientId) sendTypingStop(recipientId);
+    }
+  };
+
+  useEffect(() => {
+    return () => stopTyping();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recipientId]);
 
   const handleTyping = (e) => {
     setMessage(e.target.value);
+    if (isGroup || !recipientId) return; // typing indicators only for 1-1
 
-    // TODO: Emit typing indicator via Socket.io
-    // socket.emit('typing:start', { recipientId });
-
-    // Clear previous timeout
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
+    if (!isTypingRef.current) {
+      isTypingRef.current = true;
+      sendTypingStart(recipientId);
     }
-
-    // Set typing to false after 2 seconds of inactivity
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
-      // socket.emit('typing:stop', { recipientId });
-    }, 2000);
+      isTypingRef.current = false;
+      sendTypingStop(recipientId);
+    }, 2500);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!message.trim() || sending) return;
 
-    if (!message.trim()) {
-      return;
-    }
-
+    stopTyping();
+    const text = message;
+    setSending(true);
     try {
-      await sendMessage({
-        recipientId,
-        plaintext: message,
-        messageType: 'text',
-      });
+      if (isGroup) {
+        await sendGroupMessage(text);
+      } else {
+        await sendMessage({ recipientId, plaintext: text, messageType: 'text' });
+      }
       setMessage('');
     } catch (error) {
       console.error('Failed to send message:', error);
-      alert('Failed to send message. Please try again.');
+      alert(error.message || 'Failed to send message. Please try again.');
+    } finally {
+      setSending(false);
     }
   };
 
@@ -52,6 +75,8 @@ function MessageInput({ recipientId }) {
     }
   };
 
+  const disabled = isGroup ? false : !recipientId;
+
   return (
     <div className="message-input-container">
       <form onSubmit={handleSubmit} className="message-input-form">
@@ -60,27 +85,28 @@ function MessageInput({ recipientId }) {
             value={message}
             onChange={handleTyping}
             onKeyPress={handleKeyPress}
-            placeholder="Type an encrypted message..."
+            placeholder={isGroup ? 'Message the group…' : 'Type an encrypted message...'}
             rows={1}
             className="message-textarea"
-            disabled={!recipientId}
+            disabled={disabled}
           />
         </div>
-        <button
+        <motion.button
           type="submit"
           className="btn-send"
-          disabled={!message.trim() || !recipientId}
+          disabled={!message.trim() || disabled || sending}
           title="Send encrypted message"
+          whileHover={{ y: -2, scale: 1.03 }}
+          whileTap={{ scale: 0.95 }}
         >
-          <span className="send-icon">Send</span>
-        </button>
+          <span className="send-icon">{sending ? '…' : 'Send'}</span>
+        </motion.button>
       </form>
       <div className="encryption-notice">
-        Messages are end-to-end encrypted
+        {isGroup ? 'Encrypted individually for each member' : 'Messages are end-to-end encrypted'}
       </div>
     </div>
   );
 }
 
 export default MessageInput;
-

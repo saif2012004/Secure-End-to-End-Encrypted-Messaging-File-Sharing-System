@@ -1,0 +1,55 @@
+/* ===========================================================
+   Typing indicator — bouncing dots in a chat bubble
+   =========================================================== */
+.typing-indicator {
+  display: flex;
+  align-items: flex-end;
+  gap: 9px;
+  padding: 2px 22px 8px;
+}
+
+.typing-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--grad-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  flex-shrink: 0;
+  box-shadow: 0 3px 10px rgba(34, 211, 238, 0.3);
+}
+
+.typing-bubble {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--glass-strong);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-md);
+  border-bottom-left-radius: 5px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-sm);
+}
+
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.typing-dots .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #c4b5fd, #67e8f9);
+  animation: typingBounce 1.3s infinite ease-in-out both;
+}
+
+.typing-dots .dot:nth-child(1) { animation-delay: 0s; }
+.typing-dots .dot:nth-child(2) { animation-delay: 0.18s; }
+.typing-dots .dot:nth-child(3) { animation-delay: 0.36s; }
