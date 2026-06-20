@@ -118,8 +118,6 @@ cd client && npm run dev
 
 Open **http://localhost:3000**, register two users (in two browsers / a normal + incognito window), and start chatting. 🎉
 
-> 📖 For a detailed walkthrough see **[⚡_SETUP_AND_RUN.md](⚡_SETUP_AND_RUN.md)**.
-
 ---
 
 ## 📁 Project Structure
@@ -149,8 +147,8 @@ Secure-Messaging-System/
 │       ├── animations/             # Framer Motion variants
 │       └── styles/                 # CSS (dark glass theme)
 │
-├── ⚡_SETUP_AND_RUN.md             # detailed setup guide
-├── API_EXAMPLES.md / TESTING_GUIDE.md / ...   # supporting docs
+├── demo/                           # replay-attack demonstration scripts
+├── mitm-demos/                     # man-in-the-middle demonstration scripts
 ├── .gitignore                      # ignores .env, node_modules, dist, logs
 ├── package.json                    # backend
 └── README.md
@@ -222,7 +220,15 @@ Secure-Messaging-System/
 3. Search for the other user, open the chat, and send a message — it appears instantly and decrypts on the other side.
 4. Try the security features: open **🛡️ Verify** to compare safety numbers, watch the **✓✓** read receipts, the **🛡️ verified-sender** badge, typing indicators, and create a **group** to message multiple people.
 
-See **[TESTING_GUIDE.md](TESTING_GUIDE.md)** for more scenarios.
+### Security demonstrations
+Standalone Node scripts that demonstrate the security properties (great for a report):
+
+```bash
+node demo/replay-attack-success.js          # replay protection accepts once, rejects replays
+node demo/replay-attack-fail-insecure.js    # without protection, a replay is accepted
+node mitm-demos/mitm-attack-insecure.js     # unauthenticated key exchange is hijacked by a MITM
+node mitm-demos/mitm-attack-secured.js      # signed key exchange detects and blocks the MITM
+```
 
 ---
 
@@ -239,4 +245,4 @@ See **[TESTING_GUIDE.md](TESTING_GUIDE.md)** for more scenarios.
 
 ---
 
-**Built with ❤️ for an Information Security course.** Get started → **[⚡_SETUP_AND_RUN.md](⚡_SETUP_AND_RUN.md)**
+**Built with ❤️ for an Information Security course.**
